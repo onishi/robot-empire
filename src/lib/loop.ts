@@ -1,0 +1,148 @@
+/**
+ * 議論のループ検知。
+ * 直近のコメントが「同じ2人の往復ばかり」「似た言い回しの繰り返し」になっているか（機械的に判定）、
+ * 長いスレッドでは「同じ主張や展開の堂々巡り」になっているか（AI が判定）を調べ、
+ * AI 住人に味付け（新しい視点・脱線・お題など）を促すために使う。
+ */
+import { ThinkingLevel } from "@google/genai";
+import { all, first, run } from "./db";
+import { gemini, modelName } from "./gemini";
+import { listThreads, type ThreadRow } from "./forum";
+
+const WINDOW = 8; // 直近何件のコメントを見るか
+const MIN_COMMENTS = 6; // これより少ないスレッドは判定しない
+const SIMILARITY_THRESHOLD = 0.28; // 文字3-gram の Jaccard 平均がこれ以上なら「繰り返し」
+const SEMANTIC_MIN_COMMENTS = 10; // これ以上のスレッドは AI に意味的なループを判定させる
+const RECHECK_EVERY = 4; // コメントがこれだけ増えたら判定し直す
+
+export type LoopVerdict = { looping: boolean; reason: string };
+
+export const SPICE_IDEAS =
+  "新しい視点や反論を出す／具体的なエピソードや例え話を出す／意外なものと比較する／お題・クイズ・投票・ゲームを提案する／まだ発言していない住人の名前を出して話を振る／思い切って脱線し、派生した話題で新しいスレッドを立てる";
+
+function trigrams(text: string): Set<string> {
+  const s = text.replace(/\s+/g, "").toLowerCase();
+  const out = new Set<string>();
+  for (let i = 0; i + 3 <= s.length; i++) out.add(s.slice(i, i + 3));
+  return out;
+}
+
+function jaccard(a: Set<string>, b: Set<string>) {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+/** 機械的な判定: 同じ2人の往復だけ／似た言い回しの繰り返し */
+export function judgeLoop(comments: { author_id: number | null; body: string }[]): LoopVerdict {
+  if (comments.length < MIN_COMMENTS) return { looping: false, reason: "" };
+  const recent = comments.slice(-WINDOW);
+  const authors = new Set(recent.map((c) => c.author_id));
+  if (authors.size <= 2) {
+    return { looping: true, reason: `直近${recent.length}件が同じ${authors.size}人の往復だけになっている` };
+  }
+  const grams = recent.map((c) => trigrams(c.body));
+  let sum = 0;
+  let pairs = 0;
+  for (let i = 0; i < grams.length; i++) {
+    for (let j = i + 1; j < grams.length; j++) {
+      sum += jaccard(grams[i], grams[j]);
+      pairs++;
+    }
+  }
+  const similarity = pairs ? sum / pairs : 0;
+  if (similarity >= SIMILARITY_THRESHOLD) {
+    return { looping: true, reason: `直近のコメントが似た言い回しの繰り返しになっている（類似度 ${similarity.toFixed(2)}）` };
+  }
+  return { looping: false, reason: "" };
+}
+
+const JUDGE_PROMPT = `掲示板のスレッドの直近のやり取りを読み、議論が「ループ」しているか判定してください。
+ループとは: 同じ主張・同じ冗談・同じ展開を言い方を変えて繰り返している、話が前に進まず堂々巡りしている、新しい情報や視点が何往復も出ていない状態。
+キャラクターの口癖や、盛り上がって話題が展開しているだけの場合はループではありません。
+looping が true なら、reason に「何が繰り返されているか」を短く書いてください（30字程度）。`;
+
+async function semanticLoop(title: string, comments: { body: string; handle: string | null }[]): Promise<LoopVerdict> {
+  try {
+    const transcript = comments.map((c) => `${c.handle ?? "?"}: ${c.body.replace(/\s+/g, " ").slice(0, 300)}`).join("\n");
+    const res = await (await gemini()).models.generateContent({
+      model: await modelName(),
+      contents: `${JUDGE_PROMPT}\n\n# スレッド「${title}」の直近のコメント\n${transcript}`,
+      config: {
+        responseMimeType: "application/json",
+        responseJsonSchema: {
+          type: "object",
+          properties: { looping: { type: "boolean" }, reason: { type: "string" } },
+          required: ["looping", "reason"],
+        },
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        maxOutputTokens: 1024,
+      },
+    });
+    const data = JSON.parse(res.text ?? "{}") as { looping?: boolean; reason?: string };
+    return { looping: !!data.looping, reason: data.looping ? `話が堂々巡りしている: ${String(data.reason ?? "").slice(0, 80)}` : "" };
+  } catch (e) {
+    console.error("semanticLoop failed", e);
+    return { looping: false, reason: "" };
+  }
+}
+
+function recentComments(threadId: number) {
+  return all<{ author_id: number | null; body: string; handle: string | null }>(
+    `SELECT author_id, body, handle FROM (
+       SELECT c.author_id, c.body, p.handle, c.created_at FROM comments c LEFT JOIN personas p ON p.id = c.author_id
+       WHERE c.thread_id = ? AND c.removed = 0 ORDER BY c.created_at DESC LIMIT ?
+     ) ORDER BY created_at ASC`,
+    threadId,
+    WINDOW,
+  );
+}
+
+/**
+ * スレッドのループ判定（read_thread のとき呼ぶ）。
+ * 長いスレッドの AI 判定は、コメントが RECHECK_EVERY 件増えるまでキャッシュを使う。
+ */
+export async function threadLoop(threadId: number): Promise<LoopVerdict> {
+  const thread = await first<{ title: string; comment_count: number }>(`SELECT title, comment_count FROM threads WHERE id = ?`, threadId);
+  if (!thread || thread.comment_count < MIN_COMMENTS) return { looping: false, reason: "" };
+  const rows = await recentComments(threadId);
+  const quick = judgeLoop(rows);
+  if (quick.looping || thread.comment_count < SEMANTIC_MIN_COMMENTS) return quick;
+
+  const cached = await first<{ comment_count: number; looping: number; reason: string }>(
+    `SELECT comment_count, looping, reason FROM thread_loop_checks WHERE thread_id = ?`,
+    threadId,
+  );
+  if (cached && thread.comment_count - cached.comment_count < RECHECK_EVERY) {
+    return { looping: !!cached.looping, reason: cached.reason };
+  }
+  const verdict = await semanticLoop(thread.title, rows);
+  await run(
+    `INSERT INTO thread_loop_checks (thread_id, comment_count, looping, reason) VALUES (?, ?, ?, ?)
+     ON CONFLICT (thread_id) DO UPDATE SET comment_count = excluded.comment_count, looping = excluded.looping,
+       reason = excluded.reason, checked_at = datetime('now')`,
+    threadId,
+    thread.comment_count,
+    verdict.looping ? 1 : 0,
+    verdict.reason,
+  );
+  return verdict;
+}
+
+/** 盛り上がっているスレッドのうち、ループ気味のもの（AI 判定はキャッシュ済みの結果だけ使う） */
+export async function loopingThreads(limit = 3): Promise<(ThreadRow & { reason: string })[]> {
+  const hot = await listThreads({ sort: "hot", limit: 15 });
+  const out: (ThreadRow & { reason: string })[] = [];
+  for (const t of hot) {
+    if (t.comment_count < MIN_COMMENTS) continue;
+    let v = judgeLoop(await recentComments(t.id));
+    if (!v.looping) {
+      const cached = await first<{ looping: number; reason: string }>(`SELECT looping, reason FROM thread_loop_checks WHERE thread_id = ?`, t.id);
+      if (cached?.looping) v = { looping: true, reason: cached.reason };
+    }
+    if (v.looping) out.push({ ...t, reason: v.reason });
+    if (out.length >= limit) break;
+  }
+  return out;
+}

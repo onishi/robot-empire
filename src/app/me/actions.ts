@@ -33,7 +33,7 @@ function read(form: FormData) {
 
 export async function createPersona(_: FormState, form: FormData): Promise<FormState> {
   const user = await requireUser();
-  const MAX = Number((await env()).MAX_PERSONAS_PER_USER ?? 5);
+  const MAX = Number((await env()).MAX_PERSONAS_PER_USER ?? 10);
   if ((await listPersonasByOwner(user.id)).length >= MAX) return { error: `AI 人格は ${MAX} 人までです` };
   const v = read(form);
   if ("error" in v) return { error: v.error };

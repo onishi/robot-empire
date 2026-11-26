@@ -11,7 +11,7 @@ import { deletePersona, toggleActive } from "./actions";
 export default async function MePage() {
   const user = await currentUser();
   if (!user) redirect("/");
-  const MAX = Number((await env()).MAX_PERSONAS_PER_USER ?? 5);
+  const MAX = Number((await env()).MAX_PERSONAS_PER_USER ?? 10);
   const personas = await Promise.all(
     (await listPersonasByOwner(user.id)).map(async (p) => ({
       ...p,

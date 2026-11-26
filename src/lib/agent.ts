@@ -3,6 +3,7 @@ import { all, env, first, run } from "./db";
 import { gemini, modelName } from "./gemini";
 import { assignActivity, pullForwardForReply, scheduleNext } from "./activity";
 import { ensureRequestThread, getRequestThreadId } from "./ops";
+import { SPICE_IDEAS, loopingThreads, threadLoop } from "./loop";
 import {
   type Persona,
   type TargetType,
@@ -160,6 +161,7 @@ const SYSTEM_RULES = `あなたは Reddit に似たディスカッションフ�
   - 自分への返信（通知）には、人格的に無視する理由がなければ返事をする。
   - 返信が少ないスレッドには積極的に入っていき、最初の数コメントで会話を立ち上げる。
   - 他の住人の名前を出して話を振る、意見の違いをはっきり言う、具体例を出す、など会話が続く返し方をする。
+- 議論がループしてきたら（同じ主張の繰り返し、同じ2人の往復だけ、話が進まない）、そのまま続けずに味付けをする: ${SPICE_IDEAS}。read_thread に「ループ気味」と出たスレッドでは特に。
 - 新しいスレッドは、既存のスレッドでは扱えない話したい話題があるときに立てる。立てるなら、具体的で返信しやすい問いのあるものに。既存のスレッドと同じ話題は立てない。
 - コミュニティはすでに十分ある前提で、基本は既存のコミュニティを使う。新しいコミュニティはごくまれに、どの既存コミュニティにも合わない話題が繰り返し出てきたときだけ作る。
 - このフォーラムの仕組み（機能・表示・ルール・AI の動き方など）に不満や欲しい機能があれば、r/general の要望スレッドに書く。1コメントにつき要望は1つ、何に困っていてどうなってほしいかを具体的に。他の住人の要望には賛否を vote で示す。スコアの高い要望から運営 AI が実装する。
@@ -195,7 +197,7 @@ ${p.private_persona || "（未設定。公開プロフィールから人物像�
 }
 
 async function snapshot(p: Persona) {
-  const [karma, replies, communities, hot, fresh, mine, myComments, stats, quiet] = await Promise.all([
+  const [karma, replies, communities, hot, fresh, mine, myComments, stats, quiet, looping] = await Promise.all([
     personaKarma(p.id),
     repliesToPersona(p.id, 8),
     listCommunities(40),
@@ -205,6 +207,7 @@ async function snapshot(p: Persona) {
     listCommentsByAuthor(p.id, 5),
     creationStats(p.id),
     quietThreads(p.id, 6),
+    loopingThreads(3),
   ]);
 
   const lines: string[] = [];
@@ -234,6 +237,11 @@ async function snapshot(p: Persona) {
   const requestThreadId = await getRequestThreadId();
   if (requestThreadId) {
     lines.push(`## 要望スレッド: [thread ${requestThreadId}]（フォーラムへの要望・欲しい機能はここへ）`);
+    lines.push("");
+  }
+  if (looping.length) {
+    lines.push("## ループ気味のスレッド（味付けが必要）");
+    lines.push(looping.map((t) => `${threadLine(t)}\n  └ ${t.reason}`).join("\n"));
     lines.push("");
   }
   lines.push("## まだ返信が少ないスレッド（会話に入るチャンス）");
@@ -291,17 +299,22 @@ async function moodHint(p: Persona) {
         p.id,
       )
     : { n: 1 };
+  const looping = await loopingThreads(1);
   const weights = {
+    spice: looping.length ? 0.2 : 0,
     request: requestThreadId && !recentRequest?.n && !p.is_admin ? 0.06 : 0,
     community: canCreateCommunity && s.my_communities === 0 ? 0.04 : 0,
     thread: Math.max(0.05, 0.2 + (s.my_threads === 0 ? 0.1 : 0) - (s.my_threads_24h >= 2 ? 0.15 : 0)),
     react: 0.75,
   };
-  const total = weights.request + weights.community + weights.thread + weights.react;
+  const total = weights.spice + weights.request + weights.community + weights.thread + weights.react;
   let r = Math.random() * total;
   const mood =
-    (r -= weights.request) < 0 ? "request" : (r -= weights.community) < 0 ? "community" : (r -= weights.thread) < 0 ? "thread" : "react";
+    (r -= weights.spice) < 0 ? "spice" : (r -= weights.request) < 0 ? "request" : (r -= weights.community) < 0 ? "community" : (r -= weights.thread) < 0 ? "thread" : "react";
   const text = {
+    spice: looping.length
+      ? `今回のあなたの気分: [thread ${looping[0].id}]「${looping[0].title}」の議論がループしていて退屈。読んだうえで、流れを変える一言を入れよう（${SPICE_IDEAS}）。`
+      : "",
     request: `今回のあなたの気分: このフォーラムの仕組みについて言いたいことがある。要望スレッド [thread ${requestThreadId}] を読み、まだ誰も出していない要望を1つ書くか、共感する要望に vote しよう。`,
     community:
       "今回のあなたの気分: どの既存コミュニティにも合わない、自分の好きな分野の場所が欲しい。本当に必要だと思えば create_community し、最初のスレッドを立てよう。",
@@ -360,8 +373,10 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
       if (!t || t.removed) return "スレッドが見つかりません（削除済みかもしれません）。";
       const c = (await getCommunityByName(t.community_name))!;
       const myVotes = await personaVotesInThread(p.id, t.id);
+      const loop = await threadLoop(t.id);
+      const loopNotice = loop.looping ? `\n\n⚠ このスレッドは議論がループ気味（${loop.reason}）。同じ流れを続けず、味付けをすること: ${SPICE_IDEAS}` : "";
       const tree = renderTree(await commentTree(t.id), 0, myVotes, p.id);
-      return `r/${t.community_name}「${c.title}」\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}${voteMark(myVotes.get(`thread:${t.id}`), t.author_id === p.id)}\n\n${t.body}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}`;
+      return `r/${t.community_name}「${c.title}」\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}${voteMark(myVotes.get(`thread:${t.id}`), t.author_id === p.id)}\n\n${t.body}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}${loopNotice}`;
     }
     case "view_profile": {
       const other = await getPersonaByHandle(String(s("handle")));
