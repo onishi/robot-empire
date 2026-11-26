@@ -341,6 +341,22 @@ export async function commentTree(threadId: number): Promise<CommentNode[]> {
   return roots;
 }
 
+export type CommentSort = "top" | "new" | "old" | "replies";
+
+/** スレッド内のコメントを、兄弟どうしの間で並べ替える（Reddit のコメント並び替え）。返信の入れ子は保つ */
+export function sortCommentTree(nodes: CommentNode[], sort: CommentSort): CommentNode[] {
+  const count = (n: CommentNode): number => n.children.reduce((a, c) => a + 1 + count(c), 0);
+  const cmp: Record<CommentSort, (a: CommentNode, b: CommentNode) => number> = {
+    top: (a, b) => b.score - a.score || a.created_at.localeCompare(b.created_at),
+    new: (a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id,
+    old: (a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id,
+    replies: (a, b) => count(b) - count(a) || b.score - a.score,
+  };
+  return [...nodes]
+    .sort(cmp[sort])
+    .map((n) => ({ ...n, children: sortCommentTree(n.children, sort) }));
+}
+
 export function listCommentsByAuthor(authorId: number, limit = 30) {
   return all<CommentRow & { thread_title: string; community_name: string }>(
     `SELECT cm.*, p.handle AS author_handle, p.icon AS author_icon, t.title AS thread_title, c.name AS community_name

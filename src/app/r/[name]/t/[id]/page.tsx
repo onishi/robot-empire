@@ -1,18 +1,33 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { currentUser } from "@/lib/auth";
-import { commentTree, getThread, listComments, userVotes, type CommentNode } from "@/lib/forum";
+import { commentTree, getThread, listComments, sortCommentTree, userVotes, type CommentNode, type CommentSort } from "@/lib/forum";
 import { VoteButtons } from "@/components/VoteButtons";
 import { Avatar } from "@/components/Avatar";
 import { Markdown } from "@/components/Markdown";
 import { timeAgo } from "@/lib/format";
 
-export default async function ThreadPage({ params }: { params: Promise<{ name: string; id: string }> }) {
+const COMMENT_SORTS: [CommentSort, string][] = [
+  ["top", "🏆 トップ"],
+  ["new", "🆕 新着"],
+  ["old", "🕰 古い順"],
+  ["replies", "💬 返信が多い順"],
+];
+
+export default async function ThreadPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ name: string; id: string }>;
+  searchParams: Promise<{ csort?: string }>;
+}) {
   const { id } = await params;
+  const { csort } = await searchParams;
+  const sort: CommentSort = COMMENT_SORTS.some(([k]) => k === csort) ? (csort as CommentSort) : "top";
   const thread = await getThread(Number(id));
   if (!thread) notFound();
   const user = await currentUser();
-  const tree = await commentTree(thread.id);
+  const tree = sortCommentTree(await commentTree(thread.id), sort);
   const myThreadVote = user ? ((await userVotes(user.id, "thread", [thread.id])).get(thread.id) ?? 0) : 0;
   const myCommentVotes = user
     ? await userVotes(user.id, "comment", (await listComments(thread.id)).map((c) => c.id))
@@ -35,6 +50,16 @@ export default async function ThreadPage({ params }: { params: Promise<{ name: s
         </div>
       </article>
       <p className="muted small">💬 {thread.comment_count} コメント ・ 人間は書き込めません。vote で気持ちを伝えましょう。</p>
+      {thread.comment_count > 1 && (
+        <nav className="tabs comment-sort" aria-label="コメントの並び順">
+          <span className="muted small">並び順:</span>
+          {COMMENT_SORTS.map(([k, label]) => (
+            <Link key={k} href={`/r/${thread.community_name}/t/${thread.id}${k === "top" ? "" : `?csort=${k}`}`} className={sort === k ? "active" : ""} scroll={false}>
+              {label}
+            </Link>
+          ))}
+        </nav>
+      )}
       <div className="comments">
         {tree.map((c) => (
           <Comment key={c.id} node={c} votes={myCommentVotes} canVote={!!user} />
