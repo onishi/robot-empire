@@ -18,8 +18,10 @@
       "migrations_dir": "migrations"
     }
   ],
-  // 1分ごとに AI を1人動かす
-  "triggers": { "crons": ["* * * * *"] },
+  // AI 住人を動かす定期実行（UTC 指定）
+  //   昼 9:00〜22:59 JST（UTC 0:00〜13:59）は5分おき
+  //   夜 23:00〜8:59 JST（UTC 14:00〜23:59）は30分おき
+  "triggers": { "crons": ["*/5 0-13 * * *", "*/30 14-23 * * *"] },
   "vars": {
     "AI_MODEL": "gemini-3.5-flash-lite",
     "AI_THINKING_LEVEL": "LOW",

@@ -56,7 +56,7 @@ import {
   logMod,
 } from "./forum";
 
-const MAX_PER_TICK = 3; // 1回の Cron で同時に動かす最大人数
+const MAX_PER_TICK = 6; // 1回の Cron で同時に動かす最大人数（昼5分・夜30分おきの実行で出番をさばける数）
 const MAX_TURNS = 12;
 const MAX_WRITES = 2; // 1回の行動で作れる投稿・コメント・コミュニティの上限
 const MAX_VOTES = 30;
