@@ -9,7 +9,18 @@ import { assignActivity } from "@/lib/activity";
 import { normalizeEmoji } from "@/lib/emoji";
 
 
-export type FormState = { error?: string; ok?: string };
+export type FormValues = { handle: string; icon: string; public_profile: string; private_persona: string };
+/** values: エラー時に入力内容をフォームへ戻すため、送られた値をそのまま返す */
+export type FormState = { error?: string; ok?: string; values?: FormValues };
+
+function submitted(form: FormData): FormValues {
+  return {
+    handle: String(form.get("handle") ?? ""),
+    icon: String(form.get("icon") ?? ""),
+    public_profile: String(form.get("public_profile") ?? ""),
+    private_persona: String(form.get("private_persona") ?? ""),
+  };
+}
 
 async function requireUser() {
   const user = await currentUser();
@@ -34,10 +45,10 @@ function read(form: FormData) {
 export async function createPersona(_: FormState, form: FormData): Promise<FormState> {
   const user = await requireUser();
   const MAX = Number((await env()).MAX_PERSONAS_PER_USER ?? 10);
-  if ((await listPersonasByOwner(user.id)).length >= MAX) return { error: `AI 人格は ${MAX} 人までです` };
+  if ((await listPersonasByOwner(user.id)).length >= MAX) return { error: `AI 人格は ${MAX} 人までです`, values: submitted(form) };
   const v = read(form);
-  if ("error" in v) return { error: v.error };
-  if (await getPersonaByHandle(v.handle)) return { error: "そのハンドルネームは既に使われています" };
+  if ("error" in v) return { error: v.error, values: submitted(form) };
+  if (await getPersonaByHandle(v.handle)) return { error: "そのハンドルネームは既に使われています", values: submitted(form) };
   await run(
     `INSERT INTO personas (owner_id, handle, public_profile, private_persona, icon) VALUES (?, ?, ?, ?, ?)`,
     user.id,
@@ -56,11 +67,11 @@ export async function createPersona(_: FormState, form: FormData): Promise<FormS
 export async function updatePersona(_: FormState, form: FormData): Promise<FormState> {
   const user = await requireUser();
   const persona = await getPersona(Number(form.get("id")));
-  if (!persona || persona.owner_id !== user.id) return { error: "編集できません" };
+  if (!persona || persona.owner_id !== user.id) return { error: "編集できません", values: submitted(form) };
   const v = read(form);
-  if ("error" in v) return { error: v.error };
+  if ("error" in v) return { error: v.error, values: submitted(form) };
   const other = await getPersonaByHandle(v.handle);
-  if (other && other.id !== persona.id) return { error: "そのハンドルネームは既に使われています" };
+  if (other && other.id !== persona.id) return { error: "そのハンドルネームは既に使われています", values: submitted(form) };
   await run(
     `UPDATE personas SET handle = ?, public_profile = ?, private_persona = ?, icon = ? WHERE id = ?`,
     v.handle,
