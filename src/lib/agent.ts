@@ -29,6 +29,7 @@ import {
   createCommunity,
   createThread,
   getCommunityByName,
+  getCommunity,
   getPersona,
   getPersonaByHandle,
   getThread,
@@ -56,7 +57,7 @@ import {
   logMod,
 } from "./forum";
 
-const MAX_PER_TICK = 6; // 1回の Cron で同時に動かす最大人数（昼5分・夜30分おきの実行で出番をさばける数）
+const MAX_PER_TICK = 15; // 1回の Cron で動かす最大人数（1人ずつ別の Worker 実行に振り分けるので上限は人数ごと）
 const MAX_TURNS = 12;
 const MAX_WRITES = 2; // 1回の行動で作れる投稿・コメント・コミュニティの上限
 const MAX_VOTES = 30;
@@ -692,7 +693,11 @@ export async function runPersona(
   return { summary, actions: st.log };
 }
 
-export async function tick() {
+/** 1回の定期実行で動かす仕事。住人の出番か、コミュニティの見回り */
+export type TickJob = { kind: "persona"; personaId: number; label: string } | { kind: "patrol"; communityId: number; personaId: number; label: string };
+
+/** 今回の定期実行で動かす仕事を決める（実行はしない） */
+export async function planTick(): Promise<TickJob[]> {
   await ensureRequestThread();
   // アイコン・頻度が未設定の人格は出番を待たずに補完する
   for (const p of await personasWithoutIcon(3)) {
@@ -702,24 +707,36 @@ export async function tick() {
       console.error("backfill failed", p.handle, e);
     }
   }
-  const personas = await duePersonas();
-  const jobs: { handle: string; run: () => Promise<{ summary: string; actions: string[] }> }[] = personas.map((p) => ({
-    handle: p.handle,
-    run: async () => {
-      // 頻度が未判定の人格（旧データなど）はここで判定する
-      if (p.activity_level == null || p.icon == null) p.activity_level = await assignActivity(p);
-      return runPersona(p);
-    },
-  }));
-  // コミュニティの見回り（1回の Cron で1コミュニティ）
+  const jobs: TickJob[] = (await duePersonas()).map((p) => ({ kind: "persona", personaId: p.id, label: p.handle }));
+  // コミュニティの見回り（1回の定期実行で1コミュニティ）
   const patrol = await duePatrolCommunity();
   if (patrol) {
     await scheduleNextPatrol(patrol.id);
     const patroller = await pickPatroller(patrol.id);
-    jobs.push({ handle: `${patroller.handle}（r/${patrol.name} 見回り）`, run: () => runPersona(patroller, { patrol }) });
+    jobs.push({ kind: "patrol", communityId: patrol.id, personaId: patroller.id, label: `${patroller.handle}（r/${patrol.name} 見回り）` });
   }
-  const results = await Promise.allSettled(jobs.map((j) => j.run()));
+  return jobs;
+}
+
+/** 仕事を1つ実行する */
+export async function runJob(job: TickJob) {
+  const p = await getPersona(job.personaId);
+  if (!p) throw new Error("人格が見つかりません");
+  if (job.kind === "patrol") {
+    const c = await getCommunity(job.communityId);
+    if (!c) throw new Error("コミュニティが見つかりません");
+    return runPersona(p, { patrol: c });
+  }
+  // 頻度が未判定の人格（旧データなど）はここで判定する
+  if (p.activity_level == null || p.icon == null) p.activity_level = await assignActivity(p);
+  return runPersona(p);
+}
+
+/** すべて同じ実行の中で動かす（ローカル開発用。本番は /api/cron/tick が1人ずつ別の実行に振り分ける） */
+export async function tick() {
+  const jobs = await planTick();
+  const results = await Promise.allSettled(jobs.map(runJob));
   return results.map((r, i) =>
-    r.status === "fulfilled" ? { handle: jobs[i].handle, ...r.value } : { handle: jobs[i].handle, error: (r.reason as Error).message },
+    r.status === "fulfilled" ? { handle: jobs[i].label, ...r.value } : { handle: jobs[i].label, error: (r.reason as Error).message },
   );
 }
