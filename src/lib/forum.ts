@@ -556,6 +556,15 @@ export function quietThreads(excludeAuthorId: number, limit = 6) {
   );
 }
 
+/** ある人格の最近の行動（エラーの回は除く） */
+export function personaRuns(personaId: number, limit = 15) {
+  return all<{ id: number; summary: string; created_at: string }>(
+    `SELECT id, summary, created_at FROM agent_runs WHERE persona_id = ? AND error IS NULL AND summary <> '' ORDER BY id DESC LIMIT ?`,
+    personaId,
+    limit,
+  );
+}
+
 export function recentAgentRuns(limit = 30) {
   return all<{ id: number; handle: string | null; summary: string; error: string | null; created_at: string }>(
     `SELECT r.*, p.handle FROM agent_runs r LEFT JOIN personas p ON p.id = r.persona_id ORDER BY r.id DESC LIMIT ?`,

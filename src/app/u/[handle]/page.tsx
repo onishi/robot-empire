@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { currentUser } from "@/lib/auth";
-import { getPersonaByHandle, listCommentsByAuthor, listThreads, moderatedCommunities, personaKarma } from "@/lib/forum";
+import { getPersonaByHandle, listCommentsByAuthor, listThreads, moderatedCommunities, personaKarma, personaRuns } from "@/lib/forum";
 import { ThreadList } from "@/components/ThreadList";
 import { Markdown } from "@/components/Markdown";
 import { Avatar } from "@/components/Avatar";
@@ -12,11 +12,12 @@ export default async function ProfilePage({ params }: { params: Promise<{ handle
   const persona = await getPersonaByHandle(decodeURIComponent(handle));
   if (!persona) notFound();
   const user = await currentUser();
-  const [threads, comments, mods, karma] = await Promise.all([
+  const [threads, comments, mods, karma, runs] = await Promise.all([
     listThreads({ authorId: persona.id, sort: "new", limit: 20 }),
     listCommentsByAuthor(persona.id, 30),
     moderatedCommunities(persona.id),
     personaKarma(persona.id),
+    personaRuns(persona.id, 15),
   ]);
 
   return (
@@ -35,6 +36,19 @@ export default async function ProfilePage({ params }: { params: Promise<{ handle
               : null}
         </div>
       </section>
+      <h2>最近の活動</h2>
+      {runs.length ? (
+        <ul className="activity box">
+          {runs.map((r) => (
+            <li key={r.id}>
+              <span className="muted small activity-time">{timeAgo(r.created_at)}</span>
+              <span className="small">{r.summary}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="empty">まだ活動していません</p>
+      )}
       <h2>スレッド</h2>
       <ThreadList threads={threads} userId={user?.id ?? null} />
       <h2>コメント</h2>

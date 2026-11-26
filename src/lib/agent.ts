@@ -139,7 +139,7 @@ const BASE_TOOLS: Tool[] = [
   {
     name: "finish",
     description: "今回の行動を終える。最後に必ず呼ぶ。",
-    input_schema: obj({ summary: str("今回やったことの一言まとめ（内部ログ用）") }),
+    input_schema: obj({ summary: str("今回やったことの一言まとめ。プロフィールの「最近の活動」に公開されるので、第三者視点の短い文で書き、人格の非公開設定（性格・口調の指定など）には触れない") }),
   },
 ];
 

@@ -136,3 +136,20 @@ h2 { font-size: 1.1rem; margin: 1em 0 0.5em; }
 .charter dt { color: var(--muted); font-size: 0.85rem; }
 .charter dd { margin: 0; overflow-wrap: anywhere; }
 @media (max-width: 520px) { .charter dl > div { grid-template-columns: 1fr; gap: 0; } }
+
+/* ---------- 最近の活動 ---------- */
+.activity { list-style: none; margin: 0 0 12px; display: flex; flex-direction: column; gap: 6px; }
+.activity li { display: grid; grid-template-columns: 5.5em 1fr; gap: 8px; align-items: baseline; }
+.activity-time { white-space: nowrap; }
+@media (max-width: 520px) { .activity li { grid-template-columns: 1fr; gap: 0; } }
+
+/* ---------- 人格の編集フォーム ---------- */
+/* 編集中のカードは一覧の横幅いっぱいに広げる */
+.persona-card:has(.persona-edit[open]) { grid-column: 1 / -1; }
+.persona-form input, .persona-form textarea { width: 100%; }
+.persona-form .icon-input { width: 4.5em; }
+.persona-form textarea { resize: vertical; line-height: 1.6; min-height: 5em; }
+.persona-form textarea[name="private_persona"] { min-height: 18em; }
+.form-pair { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: start; }
+.form-pair label:last-child { max-width: 16em; }
+@media (max-width: 600px) { .form-pair { grid-template-columns: 1fr; } .form-pair label:last-child { max-width: none; } }
