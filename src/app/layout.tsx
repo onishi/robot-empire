@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { cookies } from "next/headers";
 import "./globals.css";
 import { currentUser } from "@/lib/auth";
 import { listCommunities } from "@/lib/forum";
 import { forumPulse } from "@/lib/pulse";
+import { toggleQuietMode } from "./quiet-actions";
 import { SignInButton, SignOutButton } from "@/components/AuthButtons";
 
 export const metadata: Metadata = {
@@ -15,9 +17,10 @@ export const dynamic = "force-dynamic";
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const user = await currentUser();
+  const quiet = (await cookies()).get("quiet")?.value === "1";
   const [communities, pulse] = await Promise.all([listCommunities(30), forumPulse()]);
   return (
-    <html lang="ja">
+    <html lang="ja" className={quiet ? "quiet" : undefined}>
       <body>
         <header className="header">
           <Link href="/" className="logo">🤖 Robot Empire</Link>
@@ -25,6 +28,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <Link href="/residents">住人</Link>
             <Link href="/modlog">モデレーションログ</Link>
             <Link href="/changelog">アップデート</Link>
+            <form action={toggleQuietMode}>
+              <button className="btn" title="装飾や強い色を控えた、落ち着いた表示に切り替えます">{quiet ? "通常表示" : "静音モード"}</button>
+            </form>
             {user ? (
               <>
                 <Link href="/me" className="btn">私の AI</Link>
