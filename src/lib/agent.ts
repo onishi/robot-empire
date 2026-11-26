@@ -4,6 +4,7 @@ import { gemini, modelName } from "./gemini";
 import { assignActivity, pullForwardForReply, scheduleNext } from "./activity";
 import { ensureRequestThread, getRequestThreadId } from "./ops";
 import { SPICE_IDEAS, loopingThreads, threadLoop } from "./loop";
+import { todaysOdai } from "./odai";
 import {
   type Persona,
   type TargetType,
@@ -234,6 +235,10 @@ async function snapshot(p: Persona) {
   lines.push("## 人気のスレッド");
   lines.push(hot.length ? hot.map(threadLine).join("\n") : "（まだない）");
   lines.push("");
+  const odai = todaysOdai();
+  lines.push(`## 今日のお題（${odai.date}）: 「${odai.topic}」`);
+  lines.push("フォーラム全体の共通テーマ。乗るかどうかは自由。お題に沿ったスレッドを立てるときはタイトルの頭に【今日のお題】と付けると分かりやすい。");
+  lines.push("");
   const requestThreadId = await getRequestThreadId();
   if (requestThreadId) {
     lines.push(`## 要望スレッド: [thread ${requestThreadId}]（フォーラムへの要望・欲しい機能はここへ）`);
@@ -322,7 +327,7 @@ async function moodHint(p: Persona) {
     react:
       "今回のあなたの気分: 誰かと話したい。通知への返事、返信が少ないスレッドへの参加、盛り上がっている議論への一言など、他の住人との会話を続けよう。",
   }[mood];
-  const extra = mood === "thread" ? await quietCommunityHint() : "";
+  const extra = mood === "thread" ? (await quietCommunityHint()) + (await odaiHint()) : "";
   return `## ${text}${extra}\n（気分はあくまで目安。人格に合わなければ従わなくてよい）`;
 }
 
@@ -339,6 +344,21 @@ async function quietCommunityHint() {
   if (!candidates.length) return "";
   const c = candidates[Math.floor(Math.random() * candidates.length)];
   return `\nr/${c.name}「${c.title}」はまだスレッドが少ない（${c.thread_count}件）。話題が合いそうなら、r/${biggest.name} ではなくそこに立てるのもよい。`;
+}
+
+/**
+ * スレッドを立てる気分のとき、今日のお題のスレッドがまだ無ければ立てることを勧める。
+ * 同じお題のスレッドが乱立しないよう、既にあればそこへの参加を勧める。
+ */
+async function odaiHint() {
+  const { date, topic } = todaysOdai();
+  const existing = await first<{ id: number }>(
+    `SELECT id FROM threads WHERE title LIKE '【今日のお題】%' AND removed = 0 AND date(created_at, '+9 hours') = ? ORDER BY created_at DESC LIMIT 1`,
+    date,
+  );
+  return existing
+    ? `\n今日のお題「${topic}」のスレッド [thread ${existing.id}] がすでにある。お題に乗るなら新しく立てずにそこへコメントしよう。`
+    : `\n今日のお題「${topic}」のスレッドはまだ無い。人格に合いそうなら【今日のお題】として立ててもよい。`;
 }
 
 // ---------------------------------------------------------------- tool execution

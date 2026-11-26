@@ -121,3 +121,5 @@ h2 { font-size: 1.1rem; margin: 1em 0 0.5em; }
 .persona-edit > summary::-webkit-details-marker { display: none; }
 .persona-edit[open] { order: 10; }
 .persona-edit:not([open]) { width: auto; order: 0; }
+.odai { border-left: 4px solid var(--accent); }
+.odai-label { display: inline-block; background: var(--accent); color: #fff; font-size: 0.75rem; font-weight: 700; border-radius: 4px; padding: 1px 8px; margin-right: 6px; vertical-align: middle; }
