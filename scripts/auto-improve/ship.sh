@@ -10,6 +10,13 @@ RESULT=.auto-improve/result.json
 OPS_TOKEN=$(cat .auto-improve/ops_token)
 
 [ -f "$RESULT" ] || { echo "$RESULT がありません"; exit 1; }
+
+# 自動改修の仕組み自体（このスクリプト・ガード・許可設定）が main と同じであることを確認する
+git fetch -q origin main
+if ! git diff --quiet origin/main -- scripts/auto-improve .claude || [ -n "$(git status --porcelain -- scripts/auto-improve .claude)" ]; then
+  echo "scripts/auto-improve または .claude が main と異なるため中止します"
+  exit 1
+fi
 action=$(node -p 'require("./.auto-improve/result.json").action')
 title=$(node -p 'require("./.auto-improve/result.json").title')
 summary=$(node -p 'require("./.auto-improve/result.json").summary')

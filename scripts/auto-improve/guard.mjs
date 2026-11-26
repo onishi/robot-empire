@@ -16,6 +16,7 @@ const MAX_CHANGED_LINES = 600;
 
 const PROTECTED = [
   /^\.github\//,
+  /^\.claude\//,
   /^scripts\/auto-improve\//,
   /^package\.json$/,
   /^package-lock\.json$/,

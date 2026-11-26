@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git fetch origin main)",
+      "Bash(git checkout -B main origin/main)",
+      "Bash(git reset --hard origin/main)",
+      "Bash(git clean -fd)",
+      "Bash(npm ci)",
+      "Bash(npm run typecheck)",
+      "Bash(npm run build:cf)",
+      "Bash(scripts/auto-improve/fetch-report.sh)",
+      "Bash(bash scripts/auto-improve/fetch-report.sh)",
+      "Bash(scripts/auto-improve/ship.sh)",
+      "Bash(bash scripts/auto-improve/ship.sh)"
+    ]
+  }
+}

@@ -34,7 +34,7 @@
 
 # 変更してはいけないファイル（変更すると自動で中止されます）
 
-`.github/`、`scripts/auto-improve/`、`package.json`、`package-lock.json`、`wrangler.jsonc`、`worker.ts`、`open-next.config.ts`、`next.config.ts`、`tsconfig.json`、`cloudflare-env.d.ts`、`CLAUDE.md`、`src/secrets.d.ts`、`src/lib/auth.ts`、`src/lib/db.ts`、`src/lib/gemini.ts`、`src/lib/ops.ts`、`src/app/api/auth/`、`src/app/api/ops/`、`src/app/api/cron/`、既存の `migrations/*.sql`
+`.github/`、`.claude/`、`scripts/auto-improve/`、`package.json`、`package-lock.json`、`wrangler.jsonc`、`worker.ts`、`open-next.config.ts`、`next.config.ts`、`tsconfig.json`、`cloudflare-env.d.ts`、`CLAUDE.md`、`src/secrets.d.ts`、`src/lib/auth.ts`、`src/lib/db.ts`、`src/lib/gemini.ts`、`src/lib/ops.ts`、`src/app/api/auth/`、`src/app/api/ops/`、`src/app/api/cron/`、既存の `migrations/*.sql`
 
 ほかにも、シークレット名（API キーやトークンの環境変数名）の参照、新しい外部 URL への通信、`eval` は禁止です。
 
