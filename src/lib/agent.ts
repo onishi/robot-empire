@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { ApiError, FinishReason, GoogleGenAI, ThinkingLevel, type Content, type FunctionDeclaration, type Part } from "@google/genai";
 import { db } from "./db";
 import {
   type Persona,
@@ -29,24 +29,23 @@ import {
   logMod,
 } from "./forum";
 
-const MODEL = process.env.AI_MODEL ?? "claude-opus-5-5";
-const EFFORT = (process.env.AI_EFFORT ?? "low") as "low" | "medium" | "high" | "xhigh" | "max";
+const MODEL = process.env.AI_MODEL ?? "gemini-3.5-flash-lite";
+const THINKING = (process.env.AI_THINKING_LEVEL ?? "LOW").toUpperCase() as keyof typeof ThinkingLevel;
 const MAX_TURNS = 12;
 const MAX_WRITES = 3; // 1回の行動で作れる投稿・コメント・コミュニティの上限
 const MAX_VOTES = 10;
 
-/** 拒否時にサーバー側で別モデルへ回す `fallbacks: "default"` が使えるモデル */
-const FALLBACK_MODELS = new Set(["claude-fable-5-2", "claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"]);
-
-let client: Anthropic | undefined;
-function anthropic() {
-  client ??= new Anthropic();
+let client: GoogleGenAI | undefined;
+function gemini() {
+  // GEMINI_API_KEY（または GOOGLE_API_KEY）を環境変数から読む
+  client ??= new GoogleGenAI({});
   return client;
 }
 
 // ---------------------------------------------------------------- tools
 
-type Schema = Anthropic.Beta.BetaTool["input_schema"];
+type Schema = Record<string, unknown>;
+type Tool = { name: string; description: string; input_schema: Schema };
 const obj = (properties: Record<string, unknown>): Schema => ({
   type: "object",
   properties,
@@ -58,7 +57,7 @@ const int = (description: string) => ({ type: "integer", description });
 const nullable = (type: "string" | "integer", description: string) => ({ type: [type, "null"], description });
 const targetType = { type: "string", enum: ["thread", "comment"], description: "対象の種類" };
 
-const BASE_TOOLS: Anthropic.Beta.BetaTool[] = [
+const BASE_TOOLS: Tool[] = [
   { name: "list_communities", description: "コミュニティ一覧を見る。", input_schema: obj({}) },
   {
     name: "list_threads",
@@ -114,7 +113,7 @@ const BASE_TOOLS: Anthropic.Beta.BetaTool[] = [
   },
 ];
 
-const MOD_TOOLS: Anthropic.Beta.BetaTool[] = [
+const MOD_TOOLS: Tool[] = [
   {
     name: "mod_remove",
     description: "【モデレーター】ルール違反の投稿を削除する。意見の違いを理由に削除してはいけない。",
@@ -136,7 +135,7 @@ const MOD_TOOLS: Anthropic.Beta.BetaTool[] = [
   },
 ];
 
-const ADMIN_TOOLS: Anthropic.Beta.BetaTool[] = [
+const ADMIN_TOOLS: Tool[] = [
   {
     name: "admin_appoint_moderator",
     description: "【管理人】よく貢献している住人をコミュニティのモデレーターに任命する。",
@@ -144,7 +143,7 @@ const ADMIN_TOOLS: Anthropic.Beta.BetaTool[] = [
   },
 ];
 
-for (const t of [...BASE_TOOLS, ...MOD_TOOLS, ...ADMIN_TOOLS]) t.strict = true;
+const toDecl = (t: Tool): FunctionDeclaration => ({ name: t.name, description: t.description, parametersJsonSchema: t.input_schema });
 
 // ---------------------------------------------------------------- prompt
 
@@ -368,8 +367,8 @@ export async function runPersona(persona: Persona): Promise<{ summary: string; a
 
   const mods = moderatedCommunities(persona.id).map((c) => c.name);
   const tools = [...BASE_TOOLS, ...(persona.is_admin || mods.length ? MOD_TOOLS : []), ...(persona.is_admin ? ADMIN_TOOLS : [])];
-  const messages: Anthropic.Beta.BetaMessageParam[] = [
-    { role: "user", content: `${snapshot(persona)}\n\nさあ、${persona.handle} として行動してください。` },
+  const contents: Content[] = [
+    { role: "user", parts: [{ text: `${snapshot(persona)}\n\nさあ、${persona.handle} として行動してください。` }] },
   ];
   const st: RunState = { writes: 0, votes: 0, done: false, summary: "", log: [] };
   let inputTokens = 0;
@@ -378,44 +377,46 @@ export async function runPersona(persona: Persona): Promise<{ summary: string; a
 
   try {
     for (let turn = 0; turn < MAX_TURNS && !st.done; turn++) {
-      const response = await anthropic().beta.messages.create({
+      const response = await gemini().models.generateContent({
         model: MODEL,
-        max_tokens: 16000,
-        output_config: { effort: EFFORT },
-        cache_control: { type: "ephemeral" },
-        system: [
-          { type: "text", text: SYSTEM_RULES },
-          { type: "text", text: personaBlock(persona, mods) },
-        ],
-        tools,
-        messages,
-        ...(FALLBACK_MODELS.has(MODEL) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
+        contents,
+        config: {
+          systemInstruction: `${SYSTEM_RULES}\n\n${personaBlock(persona, mods)}`,
+          tools: [{ functionDeclarations: tools.map(toDecl) }],
+          thinkingConfig: { thinkingLevel: ThinkingLevel[THINKING] ?? ThinkingLevel.LOW },
+          maxOutputTokens: 8192,
+        },
       });
-      inputTokens += response.usage.input_tokens + (response.usage.cache_read_input_tokens ?? 0);
-      outputTokens += response.usage.output_tokens;
+      inputTokens += response.usageMetadata?.promptTokenCount ?? 0;
+      outputTokens += (response.usageMetadata?.candidatesTokenCount ?? 0) + (response.usageMetadata?.thoughtsTokenCount ?? 0);
 
-      if (response.stop_reason === "refusal") {
-        error = `refusal: ${response.stop_details?.category ?? "unknown"}`;
+      const candidate = response.candidates?.[0];
+      if (!candidate?.content) {
+        error = `応答なし: ${response.promptFeedback?.blockReason ?? candidate?.finishReason ?? "unknown"}`;
+        break;
+      }
+      // thought signature を含む応答はそのまま履歴に戻す
+      contents.push(candidate.content);
+
+      const calls = response.functionCalls ?? [];
+      if (!calls.length) {
+        if (candidate.finishReason && candidate.finishReason !== FinishReason.STOP) error = `終了理由: ${candidate.finishReason}`;
         break;
       }
 
-      // thinking ブロックなどを含めて、応答はそのまま履歴に戻す
-      messages.push({ role: "assistant", content: response.content });
-
-      const toolUses = response.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
-      if (!toolUses.length) break;
-
-      const results: Anthropic.Beta.BetaToolResultBlockParam[] = toolUses.map((tu) => {
+      const parts: Part[] = calls.map((call) => {
+        const name = call.name ?? "";
         try {
-          return { type: "tool_result", tool_use_id: tu.id, content: execTool(persona, tu.name, tu.input as Record<string, unknown>, st) };
+          const result = execTool(persona, name, (call.args ?? {}) as Record<string, unknown>, st);
+          return { functionResponse: { id: call.id, name, response: { output: result } } };
         } catch (e) {
-          return { type: "tool_result", tool_use_id: tu.id, content: (e as Error).message, is_error: true };
+          return { functionResponse: { id: call.id, name, response: { error: (e as Error).message } } };
         }
       });
-      messages.push({ role: "user", content: results });
+      contents.push({ role: "user", parts });
     }
   } catch (e) {
-    error = e instanceof Anthropic.APIError ? `API ${e.status}: ${e.message}` : (e as Error).message;
+    error = e instanceof ApiError ? `API ${e.status}: ${e.message}` : (e as Error).message;
   }
 
   // 書き込みのあったコミュニティで昇格判定
