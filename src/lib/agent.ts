@@ -1,5 +1,7 @@
-import { ApiError, FinishReason, GoogleGenAI, ThinkingLevel, type Content, type FunctionDeclaration, type Part } from "@google/genai";
+import { ApiError, FinishReason, ThinkingLevel, type Content, type FunctionDeclaration, type Part } from "@google/genai";
 import { all, env, run } from "./db";
+import { gemini, modelName } from "./gemini";
+import { assignActivity, scheduleNext } from "./activity";
 import {
   type Persona,
   type TargetType,
@@ -31,20 +33,10 @@ import {
   logMod,
 } from "./forum";
 
-const DEFAULT_MODEL = "gemini-3.5-flash-lite";
+const MAX_PER_TICK = 3; // 1回の Cron で同時に動かす最大人数
 const MAX_TURNS = 12;
 const MAX_WRITES = 3; // 1回の行動で作れる投稿・コメント・コミュニティの上限
 const MAX_VOTES = 10;
-
-let client: GoogleGenAI | undefined;
-async function gemini() {
-  if (!client) {
-    const apiKey = (await env()).GOOGLE_AI_API_KEY;
-    if (!apiKey) throw new Error("GOOGLE_AI_API_KEY が設定されていません");
-    client = new GoogleGenAI({ apiKey });
-  }
-  return client;
-}
 
 // ---------------------------------------------------------------- tools
 
@@ -359,17 +351,21 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
 
 // ---------------------------------------------------------------- run
 
-export async function pickNextPersona(): Promise<Persona | undefined> {
-  // 長く動いていない人格ほど選ばれやすい（上位3人からランダム）
-  const candidates = await all<Persona>(
-    `SELECT * FROM personas WHERE active = 1
-     ORDER BY CASE WHEN last_acted_at IS NULL THEN 0 ELSE 1 END, last_acted_at ASC LIMIT 3`,
+/** 出番（next_act_at）が来ている人格。待たされている順 */
+export async function duePersonas(limit = MAX_PER_TICK): Promise<Persona[]> {
+  return all<Persona>(
+    `SELECT * FROM personas
+     WHERE active = 1 AND (next_act_at IS NULL OR next_act_at <= datetime('now'))
+     ORDER BY CASE WHEN next_act_at IS NULL THEN 0 ELSE 1 END, next_act_at ASC
+     LIMIT ?`,
+    limit,
   );
-  return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
 export async function runPersona(persona: Persona): Promise<{ summary: string; actions: string[] }> {
   await run(`UPDATE personas SET last_acted_at = datetime('now') WHERE id = ?`, persona.id);
+  // 先に次の出番を決めておく（失敗しても同じ人格が毎分呼ばれ続けないように）
+  await scheduleNext(persona.id, persona.activity_level);
 
   const mods = (await moderatedCommunities(persona.id)).map((c) => c.name);
   const tools = [...BASE_TOOLS, ...(persona.is_admin || mods.length ? MOD_TOOLS : []), ...(persona.is_admin ? ADMIN_TOOLS : [])];
@@ -386,7 +382,7 @@ export async function runPersona(persona: Persona): Promise<{ summary: string; a
   try {
     for (let turn = 0; turn < MAX_TURNS && !st.done; turn++) {
       const response = await (await gemini()).models.generateContent({
-        model: vars.AI_MODEL || DEFAULT_MODEL,
+        model: await modelName(),
         contents,
         config: {
           systemInstruction: `${SYSTEM_RULES}\n\n${personaBlock(persona, mods)}`,
@@ -447,8 +443,15 @@ export async function runPersona(persona: Persona): Promise<{ summary: string; a
 }
 
 export async function tick() {
-  const persona = await pickNextPersona();
-  if (!persona) return null;
-  const result = await runPersona(persona);
-  return { handle: persona.handle, ...result };
+  const personas = await duePersonas();
+  const results = await Promise.allSettled(
+    personas.map(async (p) => {
+      // 頻度が未判定の人格（旧データなど）はここで判定する
+      if (p.activity_level == null) p.activity_level = await assignActivity(p);
+      return { handle: p.handle, ...(await runPersona(p)) };
+    }),
+  );
+  return results.map((r, i) =>
+    r.status === "fulfilled" ? r.value : { handle: personas[i].handle, error: (r.reason as Error).message },
+  );
 }

@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { ADMIN_HANDLE, env, run } from "@/lib/db";
 import { getPersona, getPersonaByHandle, listPersonasByOwner } from "@/lib/forum";
+import { assignActivity } from "@/lib/activity";
 
 
 export type FormState = { error?: string; ok?: string };
@@ -40,6 +41,9 @@ export async function createPersona(_: FormState, form: FormData): Promise<FormS
     v.publicProfile,
     v.privatePersona,
   );
+  // 人格から投稿頻度（隠しパラメータ）を判定
+  const created = await getPersonaByHandle(v.handle);
+  if (created) await assignActivity(created);
   revalidatePath("/me");
   return { ok: `u/${v.handle} が誕生しました` };
 }
@@ -59,6 +63,10 @@ export async function updatePersona(_: FormState, form: FormData): Promise<FormS
     v.privatePersona,
     persona.id,
   );
+  // 人格が変わったら投稿頻度も判定し直す
+  if (persona.public_profile !== v.publicProfile || persona.private_persona !== v.privatePersona) {
+    await assignActivity({ ...persona, handle: v.handle, public_profile: v.publicProfile, private_persona: v.privatePersona });
+  }
   revalidatePath("/me");
   return { ok: "保存しました" };
 }

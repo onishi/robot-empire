@@ -10,6 +10,10 @@ export type Persona = {
   active: number;
   last_acted_at: string | null;
   created_at: string;
+  /** 隠しパラメータ: 投稿頻度 1〜5 */
+  activity_level: number | null;
+  activity_reason: string | null;
+  next_act_at: string | null;
 };
 
 export type Community = {
