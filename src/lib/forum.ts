@@ -14,6 +14,7 @@ export type Persona = {
   activity_level: number | null;
   activity_reason: string | null;
   next_act_at: string | null;
+  icon: string | null;
 };
 
 export type Community = {
@@ -32,6 +33,7 @@ export type ThreadRow = {
   community_name: string;
   author_id: number | null;
   author_handle: string | null;
+  author_icon: string | null;
   title: string;
   body: string;
   score: number;
@@ -47,6 +49,7 @@ export type CommentRow = {
   parent_id: number | null;
   author_id: number | null;
   author_handle: string | null;
+  author_icon: string | null;
   body: string;
   score: number;
   removed: number;
@@ -64,7 +67,7 @@ export const MOD_MIN_POSTS = 5;
 export const MAX_MODS_PER_COMMUNITY = 3;
 
 const THREAD_SELECT = `
-  SELECT t.*, c.name AS community_name, p.handle AS author_handle
+  SELECT t.*, c.name AS community_name, p.handle AS author_handle, p.icon AS author_icon
   FROM threads t
   JOIN communities c ON c.id = t.community_id
   LEFT JOIN personas p ON p.id = t.author_id`;
@@ -183,8 +186,8 @@ export async function isModerator(persona: Persona, communityId: number): Promis
 }
 
 export function listModerators(communityId: number) {
-  return all<{ handle: string; id: number; reason: string; granted_at: string }>(
-    `SELECT p.handle, p.id, m.reason, m.granted_at FROM moderators m JOIN personas p ON p.id = m.persona_id
+  return all<{ handle: string; icon: string | null; id: number; reason: string; granted_at: string }>(
+    `SELECT p.handle, p.icon, p.id, m.reason, m.granted_at FROM moderators m JOIN personas p ON p.id = m.persona_id
      WHERE m.community_id = ? ORDER BY m.granted_at`,
     communityId,
   );
@@ -282,7 +285,7 @@ export function getThread(id: number) {
 
 export function getComment(id: number) {
   return first<CommentRow & { community_id: number }>(
-    `SELECT cm.*, p.handle AS author_handle, t.community_id FROM comments cm
+    `SELECT cm.*, p.handle AS author_handle, p.icon AS author_icon, t.community_id FROM comments cm
      JOIN threads t ON t.id = cm.thread_id LEFT JOIN personas p ON p.id = cm.author_id WHERE cm.id = ?`,
     id,
   );
@@ -290,7 +293,7 @@ export function getComment(id: number) {
 
 export function listComments(threadId: number) {
   return all<CommentRow>(
-    `SELECT cm.*, p.handle AS author_handle FROM comments cm LEFT JOIN personas p ON p.id = cm.author_id
+    `SELECT cm.*, p.handle AS author_handle, p.icon AS author_icon FROM comments cm LEFT JOIN personas p ON p.id = cm.author_id
      WHERE cm.thread_id = ? ORDER BY cm.score DESC, cm.created_at ASC`,
     threadId,
   );
@@ -310,7 +313,7 @@ export async function commentTree(threadId: number): Promise<CommentNode[]> {
 
 export function listCommentsByAuthor(authorId: number, limit = 30) {
   return all<CommentRow & { thread_title: string; community_name: string }>(
-    `SELECT cm.*, p.handle AS author_handle, t.title AS thread_title, c.name AS community_name
+    `SELECT cm.*, p.handle AS author_handle, p.icon AS author_icon, t.title AS thread_title, c.name AS community_name
      FROM comments cm JOIN threads t ON t.id = cm.thread_id JOIN communities c ON c.id = t.community_id
      LEFT JOIN personas p ON p.id = cm.author_id
      WHERE cm.author_id = ? AND cm.removed = 0 ORDER BY cm.created_at DESC LIMIT ?`,

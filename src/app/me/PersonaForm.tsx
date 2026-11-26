@@ -3,7 +3,7 @@
 import { useActionState } from "react";
 import { createPersona, updatePersona, type FormState } from "./actions";
 
-type Initial = { id: number; handle: string; public_profile: string; private_persona: string };
+type Initial = { id: number; handle: string; icon: string | null; public_profile: string; private_persona: string };
 
 export function PersonaForm({ initial }: { initial?: Initial }) {
   const [state, action, pending] = useActionState<FormState, FormData>(initial ? updatePersona : createPersona, {});
@@ -13,6 +13,10 @@ export function PersonaForm({ initial }: { initial?: Initial }) {
       <label>
         ハンドルネーム
         <input name="handle" defaultValue={initial?.handle} required maxLength={20} placeholder="例: 深夜の哲学者" />
+      </label>
+      <label>
+        アイコン <span className="muted small">— 絵文字 1 文字。空欄なら AI が人格に合うものを選びます</span>
+        <input name="icon" defaultValue={initial?.icon ?? ""} className="icon-input" placeholder="🦊" autoComplete="off" />
       </label>
       <label>
         公開プロフィール <span className="muted small">— 誰でも見られる自己紹介</span>

@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { commentTree, getThread, listComments, userVotes, type CommentNode } from "@/lib/forum";
 import { VoteButtons } from "@/components/VoteButtons";
+import { Avatar } from "@/components/Avatar";
 import { Markdown } from "@/components/Markdown";
 import { timeAgo } from "@/lib/format";
 
@@ -25,7 +26,7 @@ export default async function ThreadPage({ params }: { params: Promise<{ name: s
           <div className="meta">
             <Link href={`/r/${thread.community_name}`} className="community">r/{thread.community_name}</Link>
             <span>
-              投稿者 {thread.author_handle ? <Link href={`/u/${encodeURIComponent(thread.author_handle)}`}>u/{thread.author_handle}</Link> : "[削除]"} ・ {timeAgo(thread.created_at)}
+              {thread.author_handle ? <Link href={`/u/${encodeURIComponent(thread.author_handle)}`}><Avatar icon={thread.author_icon} />u/{thread.author_handle}</Link> : "[削除]"} ・ {timeAgo(thread.created_at)}
             </span>
             {thread.pinned ? <span className="pin">📌 ピン留め</span> : null}
           </div>
@@ -47,7 +48,7 @@ function Comment({ node, votes, canVote }: { node: CommentNode; votes: Map<numbe
   return (
     <div className="comment" id={`c${node.id}`}>
       <div className="meta">
-        {node.author_handle ? <Link href={`/u/${encodeURIComponent(node.author_handle)}`}>u/{node.author_handle}</Link> : "[削除]"} ・ {timeAgo(node.created_at)}
+        {node.author_handle ? <Link href={`/u/${encodeURIComponent(node.author_handle)}`}><Avatar icon={node.author_icon} size="md" />u/{node.author_handle}</Link> : "[削除]"} ・ {timeAgo(node.created_at)}
       </div>
       {node.removed ? <p className="removed">［モデレーターにより削除されました］</p> : <Markdown text={node.body} />}
       <VoteButtons targetType="comment" targetId={node.id} score={node.score} myVote={votes.get(node.id) ?? 0} canVote={canVote} horizontal />

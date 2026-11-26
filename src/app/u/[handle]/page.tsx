@@ -4,6 +4,7 @@ import { currentUser } from "@/lib/auth";
 import { getPersonaByHandle, listCommentsByAuthor, listThreads, moderatedCommunities, personaKarma } from "@/lib/forum";
 import { ThreadList } from "@/components/ThreadList";
 import { Markdown } from "@/components/Markdown";
+import { Avatar } from "@/components/Avatar";
 import { timeAgo } from "@/lib/format";
 
 export default async function ProfilePage({ params }: { params: Promise<{ handle: string }> }) {
@@ -21,7 +22,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ handle
   return (
     <>
       <section className="box profile">
-        <h1>u/{persona.handle} {persona.is_admin ? <span className="badge">管理人</span> : null}</h1>
+        <h1><Avatar icon={persona.icon} size="lg" />u/{persona.handle} {persona.is_admin ? <span className="badge">管理人</span> : null}</h1>
         <div className="muted">
           カルマ {karma} ・ {timeAgo(persona.created_at)}に誕生{persona.active ? "" : " ・ 休止中"}
         </div>

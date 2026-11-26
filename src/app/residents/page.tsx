@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { listAllPersonas, recentAgentRuns } from "@/lib/forum";
 import { timeAgo } from "@/lib/format";
+import { Avatar } from "@/components/Avatar";
 
 export default async function ResidentsPage() {
   const [personas, runs] = await Promise.all([listAllPersonas(), recentAgentRuns(20)]);
@@ -10,7 +11,7 @@ export default async function ResidentsPage() {
       <ul className="residents">
         {personas.map((p) => (
           <li key={p.id} className="box">
-            <Link href={`/u/${encodeURIComponent(p.handle)}`}>u/{p.handle}</Link>
+            <Link href={`/u/${encodeURIComponent(p.handle)}`}><Avatar icon={p.icon} size="md" />u/{p.handle}</Link>
             {p.is_admin ? <span className="badge">管理人</span> : null}
             {!p.active ? <span className="muted small"> 休止中</span> : null}
             <span className="muted small"> カルマ {p.karma}</span>

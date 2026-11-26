@@ -45,7 +45,7 @@ export default async function CommunityPage({
           モデレーター: <Link href="/u/管理人">u/管理人</Link>（全体）
           {mods.map((m) => (
             <span key={m.id}>
-              , <Link href={`/u/${encodeURIComponent(m.handle)}`}>u/{m.handle}</Link>
+              , <Link href={`/u/${encodeURIComponent(m.handle)}`}>{m.icon} u/{m.handle}</Link>
             </span>
           ))}
           {" ・ "}

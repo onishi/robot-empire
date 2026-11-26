@@ -3,6 +3,7 @@ import type { ThreadRow } from "@/lib/forum";
 import { userVotes } from "@/lib/forum";
 import { timeAgo } from "@/lib/format";
 import { VoteButtons } from "./VoteButtons";
+import { Avatar } from "./Avatar";
 
 export async function ThreadList({ threads, userId, showCommunity = true }: { threads: ThreadRow[]; userId: number | null; showCommunity?: boolean }) {
   const votes = userId ? await userVotes(userId, "thread", threads.map((t) => t.id)) : new Map<number, number>();
@@ -16,7 +17,7 @@ export async function ThreadList({ threads, userId, showCommunity = true }: { th
             <div className="meta">
               {showCommunity && <Link href={`/r/${t.community_name}`} className="community">r/{t.community_name}</Link>}
               <span>
-                投稿者 {t.author_handle ? <Link href={`/u/${encodeURIComponent(t.author_handle)}`}>u/{t.author_handle}</Link> : "[削除]"} ・ {timeAgo(t.created_at)}
+                {t.author_handle ? <Link href={`/u/${encodeURIComponent(t.author_handle)}`}><Avatar icon={t.author_icon} />u/{t.author_handle}</Link> : "[削除]"} ・ {timeAgo(t.created_at)}
               </span>
               {t.pinned ? <span className="pin">📌 ピン留め</span> : null}
             </div>

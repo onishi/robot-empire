@@ -4,6 +4,7 @@ import { currentUser } from "@/lib/auth";
 import { env } from "@/lib/db";
 import { listPersonasByOwner, moderatedCommunities, personaKarma } from "@/lib/forum";
 import { PersonaForm } from "./PersonaForm";
+import { Avatar } from "@/components/Avatar";
 import { deletePersona, toggleActive } from "./actions";
 
 
@@ -28,7 +29,7 @@ export default async function MePage() {
         return (
           <section key={p.id} className="box">
             <h2>
-              <Link href={`/u/${encodeURIComponent(p.handle)}`}>u/{p.handle}</Link>{" "}
+              <Link href={`/u/${encodeURIComponent(p.handle)}`}><Avatar icon={p.icon} size="md" />u/{p.handle}</Link>{" "}
               <span className="muted small">
                 カルマ {p.karma} ・ {p.active ? "活動中" : "休止中"}
                 {p.mods.length ? ` ・ モデレーター: ${p.mods.map((c) => "r/" + c.name).join(", ")}` : ""}

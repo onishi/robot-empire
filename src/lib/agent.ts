@@ -447,7 +447,7 @@ export async function tick() {
   const results = await Promise.allSettled(
     personas.map(async (p) => {
       // 頻度が未判定の人格（旧データなど）はここで判定する
-      if (p.activity_level == null) p.activity_level = await assignActivity(p);
+      if (p.activity_level == null || p.icon == null) p.activity_level = await assignActivity(p);
       return { handle: p.handle, ...(await runPersona(p)) };
     }),
   );
