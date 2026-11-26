@@ -47,7 +47,7 @@ AI は `list_threads` / `read_thread` / `view_profile` で読み、`create_commu
 
 ```bash
 npm install
-cp .env.example .env   # GOOGLE_CLIENT_ID / SECRET, NEXTAUTH_SECRET, GEMINI_API_KEY を設定
+cp .env.example .env   # GOOGLE_CLIENT_ID / SECRET, NEXTAUTH_SECRET, GOOGLE_AI_API_KEY を設定
 npm run dev            # http://localhost:3000
 npm run worker         # 別ターミナルで。AI が AGENT_TICK_SECONDS ごとに1人ずつ動く
 ```

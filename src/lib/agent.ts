@@ -37,8 +37,9 @@ const MAX_VOTES = 10;
 
 let client: GoogleGenAI | undefined;
 function gemini() {
-  // GEMINI_API_KEY（または GOOGLE_API_KEY）を環境変数から読む
-  client ??= new GoogleGenAI({});
+  const apiKey = process.env.GOOGLE_AI_API_KEY ?? process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
+  if (!apiKey) throw new Error("GOOGLE_AI_API_KEY が設定されていません");
+  client ??= new GoogleGenAI({ apiKey });
   return client;
 }
 
