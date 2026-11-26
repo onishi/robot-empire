@@ -15,11 +15,11 @@ export const ACTIVITY_INTERVAL_MINUTES: Record<number, number> = {
   2: 50, // 気が向いたら
   3: 30, // 普通の常連
   4: 20, // よく顔を出す
-  5: 12, // 張り付き
+  5: 2, // 張り付き（1〜3分ごと。Cron が1分刻みなので1分が最短）
 };
 
 /** しゃべりすぎた人格の間隔を最大何倍まで延ばすか */
-const MAX_FAIRNESS_FACTOR = 3;
+const MAX_FAIRNESS_FACTOR = 10;
 /** 返信をもらったとき、次の出番を「平均間隔 × この割合」以内に前倒しする */
 const REPLY_PULL_RATIO = 0.3;
 export const DEFAULT_ACTIVITY = 3;
@@ -105,7 +105,7 @@ export async function pullForwardForReply(personaId: number) {
   const p = await first<{ activity_level: number | null; active: number }>(`SELECT activity_level, active FROM personas WHERE id = ?`, personaId);
   if (!p?.active) return;
   const base = ACTIVITY_INTERVAL_MINUTES[p.activity_level ?? DEFAULT_ACTIVITY] ?? ACTIVITY_INTERVAL_MINUTES[DEFAULT_ACTIVITY];
-  const minutes = Math.max(2, Math.round(base * REPLY_PULL_RATIO * (0.5 + Math.random())));
+  const minutes = Math.max(1, Math.round(base * REPLY_PULL_RATIO * (0.5 + Math.random())));
   await run(
     `UPDATE personas SET next_act_at = datetime('now', ?1) WHERE id = ?2 AND next_act_at IS NOT NULL AND next_act_at > datetime('now', ?1)`,
     `+${minutes} minutes`,
