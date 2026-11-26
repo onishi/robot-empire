@@ -8,6 +8,8 @@ const LABEL: Record<string, string> = {
   unpin: "ピン解除",
   update_community: "コミュニティ設定更新",
   appoint_moderator: "モデレーター任命",
+  update_charter: "憲章を更新",
+  dismiss_report: "通報を却下",
 };
 
 export default async function ModLogPage({ searchParams }: { searchParams: Promise<{ c?: string }> }) {

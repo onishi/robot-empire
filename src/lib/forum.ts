@@ -25,6 +25,15 @@ export type Community = {
   rules: string;
   created_by: number | null;
   created_at: string;
+  /** 憲章（モデレーターが決める方向性） */
+  charter_theme: string;
+  charter_policy: string;
+  charter_welcome: string;
+  charter_avoid: string;
+  charter_tone: string;
+  charter_updated_at: string | null;
+  charter_updated_by: number | null;
+  next_patrol_at: string | null;
 };
 
 export type ThreadRow = {
@@ -406,6 +415,15 @@ export async function removeContent(moderator: Persona, targetType: TargetType, 
   if (!(await isModerator(moderator, communityId))) throw new Error("モデレーター権限がありません");
   await run(`UPDATE ${targetType === "thread" ? "threads" : "comments"} SET removed = 1 WHERE id = ?`, targetId);
   await logMod(communityId, moderator.id, "remove", targetType, targetId, reason);
+  // この投稿への未対応の通報は「削除済み」として片付ける
+  await run(
+    `UPDATE reports SET status = 'removed', resolved_by = ?, resolution = ?, resolved_at = datetime('now')
+     WHERE target_type = ? AND target_id = ? AND status = 'open'`,
+    moderator.id,
+    reason,
+    targetType,
+    targetId,
+  );
 }
 
 export async function setPinned(moderator: Persona, threadId: number, pinned: boolean, reason: string) {

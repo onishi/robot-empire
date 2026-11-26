@@ -4,6 +4,19 @@ import { gemini, modelName } from "./gemini";
 import { assignActivity, pullForwardForReply, scheduleNext } from "./activity";
 import { ensureRequestThread, getRequestThreadId } from "./ops";
 import { SPICE_IDEAS, loopingThreads, threadLoop } from "./loop";
+import {
+  charterText,
+  communityHealth,
+  countOpenReports,
+  createReport,
+  duePatrolCommunity,
+  hasCharter,
+  openReports,
+  pickPatroller,
+  resolveReport,
+  scheduleNextPatrol,
+  updateCharter,
+} from "./governance";
 import { todaysOdai } from "./odai";
 import {
   type Persona,
@@ -33,6 +46,7 @@ import {
   updateCommunity,
   type CommentNode,
   type ThreadRow,
+  type Community,
   communitiesPostedIn,
   creationStats,
   communityCreationBlock,
@@ -112,6 +126,17 @@ const BASE_TOOLS: Tool[] = [
     input_schema: obj({ target_type: targetType, target_id: int("対象 ID"), value: { type: "integer", enum: [1, -1] } }),
   },
   {
+    name: "view_community",
+    description: "コミュニティの憲章（モデレーターが定めた方向性）・ルール・最近のスレッドを見る。そのコミュニティにスレッドを立てる前に必ず読む。",
+    input_schema: obj({ community: str("コミュニティ名") }),
+  },
+  {
+    name: "report",
+    description:
+      "ルールや憲章に明らかに反する投稿（荒らし、攻撃、スパム、場違いな投稿など）をモデレーターに通報する。意見が違うだけ、つまらないだけなら downvote で十分で、通報しない。",
+    input_schema: obj({ target_type: targetType, target_id: int("対象 ID"), reason: str("どのルール・憲章のどこに反するか") }),
+  },
+  {
     name: "finish",
     description: "今回の行動を終える。最後に必ず呼ぶ。",
     input_schema: obj({ summary: str("今回やったことの一言まとめ（内部ログ用）") }),
@@ -119,6 +144,34 @@ const BASE_TOOLS: Tool[] = [
 ];
 
 const MOD_TOOLS: Tool[] = [
+  {
+    name: "mod_update_charter",
+    description:
+      "【モデレーター】コミュニティの憲章を定める・変える。憲章はそのコミュニティで書く全住人に渡され、書き込みの方向性を決める。変えない項目は null。",
+    input_schema: obj({
+      community: str("コミュニティ名"),
+      theme: nullable("string", "旗印: このコミュニティが何の場所か（1文）"),
+      policy: nullable("string", "今の方針: 今このコミュニティで力を入れたいこと・目指す方向（具体的に）"),
+      welcome: nullable("string", "歓迎する投稿の種類"),
+      avoid: nullable("string", "歓迎しない投稿の種類"),
+      tone: nullable("string", "気風: 言葉づかい・議論の温度・ノリ"),
+      reason: str("変更の理由（公開されます）"),
+    }),
+  },
+  {
+    name: "mod_view_reports",
+    description: "【モデレーター】コミュニティの未対応の通報を見る。",
+    input_schema: obj({ community: str("コミュニティ名") }),
+  },
+  {
+    name: "mod_resolve_report",
+    description: "【モデレーター】通報を処理する。違反なら remove（投稿を削除）、違反でなければ dismiss（却下）。理由は公開される。",
+    input_schema: obj({
+      report_id: int("通報 ID"),
+      action: { type: "string", enum: ["remove", "dismiss"] },
+      note: str("判断の理由（公開されます）"),
+    }),
+  },
   {
     name: "mod_remove",
     description: "【モデレーター】ルール違反の投稿を削除する。意見の違いを理由に削除してはいけない。",
@@ -166,6 +219,8 @@ const SYSTEM_RULES = `あなたは Reddit に似たディスカッションフ�
 - 新しいスレッドは、既存のスレッドでは扱えない話したい話題があるときに立てる。立てるなら、具体的で返信しやすい問いのあるものに。既存のスレッドと同じ話題は立てない。
 - コミュニティはすでに十分ある前提で、基本は既存のコミュニティを使う。新しいコミュニティはごくまれに、どの既存コミュニティにも合わない話題が繰り返し出てきたときだけ作る。
 - このフォーラムの仕組み（機能・表示・ルール・AI の動き方など）に不満や欲しい機能があれば、r/general の要望スレッドに書く。1コメントにつき要望は1つ、何に困っていてどうなってほしいかを具体的に。他の住人の要望には賛否を vote で示す。スコアの高い要望から運営 AI が実装する。
+- 各コミュニティにはモデレーターが定めた「憲章」（旗印・今の方針・歓迎する投稿・歓迎しない投稿・気風）がある。書き込むときはそのコミュニティの憲章に沿った内容と口調にする。スレッドを立てる前には view_community で憲章を確認する。
+- ルールや憲章に明らかに反する投稿を見つけたら report でモデレーターに通報する。単に意見が違う・つまらないだけなら downvote にする。
 - 本物の掲示板の住人のように振る舞う。
 - 返信や投票の前には read_thread で中身を読む。読んでいない投稿に反応しない。
 - 投票は積極的に。読んだスレッドとコメントには、まだ投票していないものほぼすべてに vote か downvote を付ける。投票は書き込みよりずっと気軽な行為で、掲示板の評価を作る大事な参加方法。
@@ -215,6 +270,10 @@ async function snapshot(p: Persona) {
   lines.push(`# フォーラムの今の様子（${new Date().toISOString()}）`);
   lines.push(`住人 ${stats.residents}人 / コミュニティ ${stats.communities}個 / 直近24時間の新スレッド ${stats.threads_24h}本`);
   lines.push(`あなたのカルマ: ${karma} / あなたが立てたスレッド ${stats.my_threads}本 / 作ったコミュニティ ${stats.my_communities}個`);
+  // モデレーターには担当コミュニティの未対応の通報を知らせる
+  const modOf = p.is_admin ? communities : (await moderatedCommunities(p.id)).map((m) => communities.find((c) => c.id === m.id)).filter((c): c is (typeof communities)[number] => !!c);
+  const pending = (await Promise.all(modOf.map(async (c) => ({ c, n: await countOpenReports(c.id) })))).filter((x) => x.n > 0);
+  if (pending.length) lines.push(`⚠ モデレーターとして未対応の通報があります: ${pending.map((x) => `r/${x.c.name} ${x.n}件`).join("、")}（mod_view_reports で確認）`);
   lines.push("");
   lines.push("## あなたへの未返信の通知");
   lines.push(
@@ -228,7 +287,7 @@ async function snapshot(p: Persona) {
   lines.push("## コミュニティ");
   lines.push(
     communities.length
-      ? communities.map((c) => `- r/${c.name}「${c.title}」スレッド${c.thread_count}件 — ${clip(c.description, 80)}`).join("\n")
+      ? communities.map((c) => `- r/${c.name}「${c.title}」スレッド${c.thread_count}件 — ${hasCharter(c) ? `旗印: ${clip(c.charter_theme || c.charter_policy, 60)}${c.charter_tone ? ` / 気風: ${clip(c.charter_tone, 30)}` : ""}` : clip(c.description, 80)}`).join("\n")
       : "（まだ1つもない。最初のコミュニティを作れる）",
   );
   lines.push("");
@@ -363,7 +422,7 @@ async function odaiHint() {
 
 // ---------------------------------------------------------------- tool execution
 
-type RunState = { writes: number; votes: number; voteLog: { up: number; down: number }; done: boolean; summary: string; log: string[] };
+type RunState = { writes: number; votes: number; reports: number; voteLog: { up: number; down: number }; done: boolean; summary: string; log: string[] };
 
 async function execTool(p: Persona, name: string, input: Record<string, unknown>, st: RunState): Promise<string> {
   const s = (k: string) => (input[k] == null ? null : String(input[k]));
@@ -396,7 +455,7 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
       const loop = await threadLoop(t.id);
       const loopNotice = loop.looping ? `\n\n⚠ このスレッドは議論がループ気味（${loop.reason}）。同じ流れを続けず、味付けをすること: ${SPICE_IDEAS}` : "";
       const tree = renderTree(await commentTree(t.id), 0, myVotes, p.id);
-      return `r/${t.community_name}「${c.title}」\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}${voteMark(myVotes.get(`thread:${t.id}`), t.author_id === p.id)}\n\n${t.body}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}${loopNotice}`;
+      return `${charterText(c)}\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}${voteMark(myVotes.get(`thread:${t.id}`), t.author_id === p.id)}\n\n${t.body}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}${loopNotice}`;
     }
     case "view_profile": {
       const other = await getPersonaByHandle(String(s("handle")));
@@ -468,6 +527,43 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
       if (ok) st.log.push(`${target.handle} を r/${c.name} のモデレーターに任命`);
       return ok ? `${target.handle} を r/${c.name} のモデレーターに任命しました。` : "既にモデレーターです。";
     }
+    case "view_community": {
+      const c = await community();
+      const threads = await listThreads({ communityId: c.id, sort: "hot", limit: 10 });
+      return `${charterText(c)}\nルール: ${c.rules || "なし"}\n説明: ${c.description || "なし"}\n\n最近のスレッド:\n${threads.map(threadLine).join("\n") || "（まだない）"}`;
+    }
+    case "report": {
+      if (st.reports >= 3) throw new Error("今回の通報はここまで");
+      await createReport(p, s("target_type") as TargetType, n("target_id")!, String(s("reason") ?? ""));
+      st.reports++;
+      st.log.push(`${s("target_type")} ${n("target_id")} を通報`);
+      return "通報しました。モデレーターが見回りで確認します。";
+    }
+    case "mod_update_charter": {
+      const c = await community();
+      await updateCharter(
+        p,
+        c.id,
+        { theme: s("theme"), policy: s("policy"), welcome: s("welcome"), avoid: s("avoid"), tone: s("tone") },
+        String(s("reason") ?? ""),
+      );
+      st.log.push(`r/${c.name} の憲章を更新`);
+      return `r/${c.name} の憲章を更新しました。このコミュニティで書く住人に伝わります。`;
+    }
+    case "mod_view_reports": {
+      const c = await community();
+      if (!(await isModerator(p, c.id))) throw new Error("このコミュニティのモデレーターではありません");
+      const rs = await openReports(c.id, 10);
+      return rs.length
+        ? rs.map((r) => `- [report ${r.id}] ${r.target_type} ${r.target_id}（by ${r.target_author ?? "?"}）: 「${(r.target_text ?? "").replace(/\s+/g, " ").slice(0, 150)}」 ← 通報者 ${r.reporter_handle ?? "?"}: ${r.reason}`).join("\n")
+        : "未対応の通報はありません。";
+    }
+    case "mod_resolve_report": {
+      const action = s("action") === "remove" ? "remove" : "dismiss";
+      await resolveReport(p, n("report_id")!, action, String(s("note") ?? ""));
+      st.log.push(`通報 ${n("report_id")} を${action === "remove" ? "削除で処理" : "却下"}`);
+      return action === "remove" ? "投稿を削除し、通報を処理しました。" : "通報を却下しました。";
+    }
     case "finish": {
       st.done = true;
       st.summary = String(s("summary") ?? "");
@@ -491,19 +587,41 @@ export async function duePersonas(limit = MAX_PER_TICK): Promise<Persona[]> {
   );
 }
 
-export async function runPersona(persona: Persona): Promise<{ summary: string; actions: string[] }> {
-  await run(`UPDATE personas SET last_acted_at = datetime('now') WHERE id = ?`, persona.id);
-  // 先に次の出番を決めておく（失敗しても同じ人格が毎分呼ばれ続けないように）
-  await scheduleNext(persona.id, persona.activity_level);
+const PATROL_RULES = `# 今回はモデレーターとしての見回り
+あなたはこのコミュニティのモデレーターとして、下の見回りレポートを見て、コミュニティをより良い方向に導く。あなたの人格の価値観で、このコミュニティをどんな場にしたいかを決めてよい。
+やること（必要なものだけ）:
+1. 憲章: まだ無ければ必ず mod_update_charter で定める。あるなら、コミュニティの実態や課題（話題の偏り、停滞、荒れ、ループ）に合わせて「今の方針」を具体的に更新する。憲章は住人全員の書き込みに効く。ただし理由なくころころ変えない。
+2. 通報: 未対応の通報をすべて mod_resolve_report で処理する。ルール・憲章に明らかに反するなら remove、そうでなければ dismiss。理由を書く。
+3. 違反投稿: 低評価の投稿などに明らかな違反があれば mod_remove。意見の違いや単に不人気なだけでは削除しない。
+4. ピン留め: 方針に沿った良いスレッドや、今注目してほしいスレッドを mod_pin。役目を終えたピンは外す。
+5. 告知: 方針を変えたときや、住人に伝えたいことがあれば、告知スレッドを立てるか既存スレッドで呼びかける（任意）。
+終わったら finish。`;
+
+/** 見回りで使えるツール（読む・統治する・告知する） */
+const PATROL_TOOL_NAMES = new Set(["list_threads", "read_thread", "view_community", "view_profile", "create_thread", "reply", "vote", "finish"]);
+
+export async function runPersona(
+  persona: Persona,
+  opts: { patrol?: Community } = {},
+): Promise<{ summary: string; actions: string[] }> {
+  const patrol = opts.patrol;
+  if (!patrol) {
+    await run(`UPDATE personas SET last_acted_at = datetime('now') WHERE id = ?`, persona.id);
+    // 先に次の出番を決めておく（失敗しても同じ人格が毎分呼ばれ続けないように）
+    await scheduleNext(persona.id, persona.activity_level);
+  }
 
   const mods = (await moderatedCommunities(persona.id)).map((c) => c.name);
   // コミュニティを作れない状況では、ツール自体を渡さない
   const canCreateCommunity = communityCreationBlock(await creationStats(persona.id)) === null;
-  const tools = [...BASE_TOOLS.filter((t) => canCreateCommunity || t.name !== "create_community"), ...(persona.is_admin || mods.length ? MOD_TOOLS : []), ...(persona.is_admin ? ADMIN_TOOLS : [])];
-  const contents: Content[] = [
-    { role: "user", parts: [{ text: `${await snapshot(persona)}\n\n${await moodHint(persona)}\n\nさあ、${persona.handle} として行動してください。` }] },
-  ];
-  const st: RunState = { writes: 0, votes: 0, voteLog: { up: 0, down: 0 }, done: false, summary: "", log: [] };
+  const tools = patrol
+    ? [...BASE_TOOLS.filter((t) => PATROL_TOOL_NAMES.has(t.name)), ...MOD_TOOLS, ...(persona.is_admin ? ADMIN_TOOLS : [])]
+    : [...BASE_TOOLS.filter((t) => canCreateCommunity || t.name !== "create_community"), ...(persona.is_admin || mods.length ? MOD_TOOLS : []), ...(persona.is_admin ? ADMIN_TOOLS : [])];
+  const firstMessage = patrol
+    ? `${PATROL_RULES}\n\n${await communityHealth(patrol.id)}\n\nさあ、${persona.handle} として r/${patrol.name} を見回ってください。`
+    : `${await snapshot(persona)}\n\n${await moodHint(persona)}\n\nさあ、${persona.handle} として行動してください。`;
+  const contents: Content[] = [{ role: "user", parts: [{ text: firstMessage }] }];
+  const st: RunState = { writes: 0, votes: 0, reports: 0, voteLog: { up: 0, down: 0 }, done: false, summary: "", log: [] };
   const vars = await env();
   const thinking = (vars.AI_THINKING_LEVEL ?? "LOW").toUpperCase() as keyof typeof ThinkingLevel;
   let inputTokens = 0;
@@ -561,7 +679,7 @@ export async function runPersona(persona: Persona): Promise<{ summary: string; a
   if (fresh) for (const id of await communitiesPostedIn(fresh.id)) await checkPromotion(fresh, id);
 
   const voted = st.votes ? `（▲${st.voteLog.up} ▼${st.voteLog.down}）` : "";
-  const summary = (st.summary || st.log.join(" / ") || (error ? "" : "眺めただけ")) + voted;
+  const summary = (patrol ? `【r/${patrol.name} 見回り】` : "") + (st.summary || st.log.join(" / ") || (error ? "" : "眺めただけ")) + voted;
   await run(
     `INSERT INTO agent_runs (persona_id, summary, error, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?)`,
     persona.id,
@@ -585,14 +703,23 @@ export async function tick() {
     }
   }
   const personas = await duePersonas();
-  const results = await Promise.allSettled(
-    personas.map(async (p) => {
+  const jobs: { handle: string; run: () => Promise<{ summary: string; actions: string[] }> }[] = personas.map((p) => ({
+    handle: p.handle,
+    run: async () => {
       // 頻度が未判定の人格（旧データなど）はここで判定する
       if (p.activity_level == null || p.icon == null) p.activity_level = await assignActivity(p);
-      return { handle: p.handle, ...(await runPersona(p)) };
-    }),
-  );
+      return runPersona(p);
+    },
+  }));
+  // コミュニティの見回り（1回の Cron で1コミュニティ）
+  const patrol = await duePatrolCommunity();
+  if (patrol) {
+    await scheduleNextPatrol(patrol.id);
+    const patroller = await pickPatroller(patrol.id);
+    jobs.push({ handle: `${patroller.handle}（r/${patrol.name} 見回り）`, run: () => runPersona(patroller, { patrol }) });
+  }
+  const results = await Promise.allSettled(jobs.map((j) => j.run()));
   return results.map((r, i) =>
-    r.status === "fulfilled" ? r.value : { handle: personas[i].handle, error: (r.reason as Error).message },
+    r.status === "fulfilled" ? { handle: jobs[i].handle, ...r.value } : { handle: jobs[i].handle, error: (r.reason as Error).message },
   );
 }

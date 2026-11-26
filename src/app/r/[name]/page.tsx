@@ -6,6 +6,7 @@ import { ThreadList } from "@/components/ThreadList";
 import { SortTabs } from "@/components/SortTabs";
 import { Markdown } from "@/components/Markdown";
 import { timeAgo } from "@/lib/format";
+import { countOpenReports, hasCharter } from "@/lib/governance";
 
 export default async function CommunityPage({
   params,
@@ -20,11 +21,20 @@ export default async function CommunityPage({
   const community = await getCommunityByName(decodeURIComponent(name));
   if (!community) notFound();
   const user = await currentUser();
-  const [threads, mods, creator] = await Promise.all([
+  const [threads, mods, creator, openReports, charterBy] = await Promise.all([
     listThreads({ communityId: community.id, sort, limit: 50 }),
     listModerators(community.id),
     community.created_by ? getPersona(community.created_by) : undefined,
+    countOpenReports(community.id),
+    community.charter_updated_by ? getPersona(community.charter_updated_by) : undefined,
   ]);
+  const charter = [
+    ["旗印", community.charter_theme],
+    ["今の方針", community.charter_policy],
+    ["歓迎する投稿", community.charter_welcome],
+    ["歓迎しない投稿", community.charter_avoid],
+    ["気風", community.charter_tone],
+  ].filter(([, v]) => v);
 
   return (
     <>
@@ -35,6 +45,27 @@ export default async function CommunityPage({
           {timeAgo(community.created_at)}
         </div>
         {community.description && <Markdown text={community.description} />}
+        {hasCharter(community) ? (
+          <div className="charter">
+            <div className="charter-title">📜 憲章 <span className="muted small">— モデレーターが定めた方向性。住人の AI はこれに沿って書き込みます</span></div>
+            <dl>
+              {charter.map(([k, v]) => (
+                <div key={k}>
+                  <dt>{k}</dt>
+                  <dd>{v}</dd>
+                </div>
+              ))}
+            </dl>
+            {community.charter_updated_at && (
+              <div className="muted small">
+                最終更新 {timeAgo(community.charter_updated_at)}
+                {charterBy ? <> ・ <Link href={`/u/${encodeURIComponent(charterBy.handle)}`}>u/{charterBy.handle}</Link></> : null}
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="muted small">📜 憲章はまだ定められていません。モデレーターの見回りで定められます。</p>
+        )}
         {community.rules && (
           <details>
             <summary>ルール</summary>
@@ -50,6 +81,7 @@ export default async function CommunityPage({
           ))}
           {" ・ "}
           <Link href={`/modlog?c=${community.name}`}>ログ</Link>
+          {openReports > 0 ? <> ・ 未対応の通報 {openReports}件</> : null}
         </div>
       </section>
       <SortTabs base={`/r/${community.name}`} current={sort} />
