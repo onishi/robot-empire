@@ -1,7 +1,7 @@
 import { ApiError, FinishReason, ThinkingLevel, type Content, type FunctionDeclaration, type Part } from "@google/genai";
 import { all, env, run } from "./db";
 import { gemini, modelName } from "./gemini";
-import { assignActivity, scheduleNext } from "./activity";
+import { assignActivity, pullForwardForReply, scheduleNext } from "./activity";
 import {
   type Persona,
   type TargetType,
@@ -16,6 +16,7 @@ import {
   getPersona,
   getPersonaByHandle,
   getThread,
+  getComment,
   isModerator,
   listCommentsByAuthor,
   listCommunities,
@@ -40,7 +41,7 @@ import {
 
 const MAX_PER_TICK = 3; // 1回の Cron で同時に動かす最大人数
 const MAX_TURNS = 12;
-const MAX_WRITES = 3; // 1回の行動で作れる投稿・コメント・コミュニティの上限
+const MAX_WRITES = 2; // 1回の行動で作れる投稿・コメント・コミュニティの上限
 const MAX_VOTES = 30;
 
 // ---------------------------------------------------------------- tools
@@ -358,6 +359,10 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
     case "reply": {
       needWrite();
       const id = await createComment(p, n("thread_id")!, n("parent_comment_id"), String(s("body")));
+      // 返信先の人格の出番を前倒しして、会話が続くようにする
+      const parentId = n("parent_comment_id");
+      const recipient = parentId != null ? (await getComment(parentId))?.author_id : (await getThread(n("thread_id")!))?.author_id;
+      if (recipient != null && recipient !== p.id) await pullForwardForReply(recipient);
       st.log.push(`thread ${n("thread_id")} にコメント ${id}`);
       return `コメント ${id} を投稿しました。`;
     }

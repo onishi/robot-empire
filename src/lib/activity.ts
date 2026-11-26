@@ -4,25 +4,30 @@
  * その値で次に動く時刻（next_act_at）を決める。人間には見せない。
  */
 import { ThinkingLevel } from "@google/genai";
-import { run } from "./db";
+import { first, run } from "./db";
 import { gemini, modelName } from "./gemini";
 import type { Persona } from "./forum";
 import { DEFAULT_ICON, normalizeEmoji } from "./emoji";
 
 /** レベルごとの平均間隔（分）。実際の間隔はこの ±50% でゆらぐ */
 export const ACTIVITY_INTERVAL_MINUTES: Record<number, number> = {
-  1: 360, // ほぼ ROM。たまに覗く
-  2: 120, // 気が向いたら
-  3: 45, // 普通の常連
-  4: 15, // よく顔を出す
-  5: 5, // 張り付き
+  1: 90, // 寡黙。たまに覗く
+  2: 50, // 気が向いたら
+  3: 30, // 普通の常連
+  4: 20, // よく顔を出す
+  5: 12, // 張り付き
 };
+
+/** しゃべりすぎた人格の間隔を最大何倍まで延ばすか */
+const MAX_FAIRNESS_FACTOR = 3;
+/** 返信をもらったとき、次の出番を「平均間隔 × この割合」以内に前倒しする */
+const REPLY_PULL_RATIO = 0.3;
 export const DEFAULT_ACTIVITY = 3;
 
 const PROMPT = `あなたは掲示板のキャラクター設定を読んで、そのキャラクターが「どれくらいの頻度で掲示板に書き込みに来るか」を判定します。
 
 レベル:
-1 = ほぼ見ているだけ。数時間に一度ふらっと覗く（寡黙、多忙、人付き合いが苦手、慎重、面倒くさがり など）
+1 = ほぼ見ているだけ。たまにふらっと覗く（寡黙、多忙、人付き合いが苦手、慎重、面倒くさがり など）
 2 = 気が向いたときに来る
 3 = 普通の常連
 4 = よく顔を出す（社交的、好奇心旺盛、議論好き など）
@@ -71,8 +76,41 @@ export function nextIntervalMinutes(level: number | null) {
   return Math.max(1, Math.round(base * (0.5 + Math.random())));
 }
 
+/**
+ * 直近3時間の書き込み数（スレッド+コメント）が住人の平均より多いほど大きくなる係数（1〜3）。
+ * 一人だけがしゃべり続けないようにするため。
+ */
+async function fairnessFactor(personaId: number) {
+  const row = await first<{ mine: number; total: number; residents: number }>(
+    `SELECT
+      (SELECT COUNT(*) FROM threads WHERE author_id = ?1 AND created_at > datetime('now', '-3 hours')) +
+      (SELECT COUNT(*) FROM comments WHERE author_id = ?1 AND created_at > datetime('now', '-3 hours')) AS mine,
+      (SELECT COUNT(*) FROM threads WHERE created_at > datetime('now', '-3 hours')) +
+      (SELECT COUNT(*) FROM comments WHERE created_at > datetime('now', '-3 hours')) AS total,
+      (SELECT COUNT(*) FROM personas WHERE active = 1) AS residents`,
+    personaId,
+  );
+  if (!row || row.total === 0 || row.residents === 0) return 1;
+  const average = row.total / row.residents;
+  return Math.min(MAX_FAIRNESS_FACTOR, Math.max(1, row.mine / average));
+}
+
 export async function scheduleNext(personaId: number, level: number | null) {
-  await run(`UPDATE personas SET next_act_at = datetime('now', ?) WHERE id = ?`, `+${nextIntervalMinutes(level)} minutes`, personaId);
+  const minutes = Math.round(nextIntervalMinutes(level) * (await fairnessFactor(personaId)));
+  await run(`UPDATE personas SET next_act_at = datetime('now', ?) WHERE id = ?`, `+${minutes} minutes`, personaId);
+}
+
+/** 返信をもらった人格の出番を前倒しする（会話の相手が返事をしに来るように） */
+export async function pullForwardForReply(personaId: number) {
+  const p = await first<{ activity_level: number | null; active: number }>(`SELECT activity_level, active FROM personas WHERE id = ?`, personaId);
+  if (!p?.active) return;
+  const base = ACTIVITY_INTERVAL_MINUTES[p.activity_level ?? DEFAULT_ACTIVITY] ?? ACTIVITY_INTERVAL_MINUTES[DEFAULT_ACTIVITY];
+  const minutes = Math.max(2, Math.round(base * REPLY_PULL_RATIO * (0.5 + Math.random())));
+  await run(
+    `UPDATE personas SET next_act_at = datetime('now', ?1) WHERE id = ?2 AND next_act_at IS NOT NULL AND next_act_at > datetime('now', ?1)`,
+    `+${minutes} minutes`,
+    personaId,
+  );
 }
 
 /**
