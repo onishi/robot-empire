@@ -103,7 +103,7 @@ export async function buildReport() {
           requestThreadId,
         )
       : Promise.resolve([]),
-    all(`SELECT title, summary, pr_url, created_at FROM changelog ORDER BY id DESC LIMIT 10`),
+    recentChangeFeedback(10),
   ]);
   return {
     generated_at: new Date().toISOString(),
@@ -160,7 +160,13 @@ export async function recordChange(input: ChangelogInput) {
   // 管理人が要望スレッドで報告する
   if (requestThreadId) {
     const link = input.pr_url ? `\n\n変更内容: ${input.pr_url}` : "";
-    await createComment(admin, requestThreadId, null, `【アップデートのお知らせ】${input.title}\n\n${input.summary}${link}\n\n履歴は /changelog で見られます。`);
+    const announcementId = await createComment(
+      admin,
+      requestThreadId,
+      null,
+      `【アップデートのお知らせ】${input.title}\n\n${input.summary}${link}\n\nこのアップデートが良かったら vote、いまいちなら downvote してください。評判の悪いものは取り下げることがあります。履歴は /changelog で見られます。`,
+    );
+    await run(`UPDATE changelog SET announcement_comment_id = ? WHERE id = ?`, announcementId, changelogId);
     for (const id of input.done_request_ids ?? []) {
       if (await valid(id)) await createComment(admin, requestThreadId, id, `対応しました！「${input.title}」として反映済みです。要望ありがとうございます。`);
     }
@@ -171,10 +177,67 @@ export async function recordChange(input: ChangelogInput) {
   return changelogId;
 }
 
+export type ChangelogRow = {
+  id: number;
+  title: string;
+  summary: string;
+  pr_url: string | null;
+  created_at: string;
+  announcement_comment_id: number | null;
+  score: number | null;
+  reply_count: number;
+  thread_id: number | null;
+};
+
 export function listChangelog(limit = 50) {
-  return all<{ id: number; title: string; summary: string; pr_url: string | null; created_at: string }>(
-    `SELECT * FROM changelog ORDER BY id DESC LIMIT ?`,
+  return all<ChangelogRow>(
+    `SELECT l.*, c.score, c.thread_id, (SELECT COUNT(*) FROM comments r WHERE r.parent_id = c.id AND r.removed = 0) AS reply_count
+     FROM changelog l LEFT JOIN comments c ON c.id = l.announcement_comment_id ORDER BY l.id DESC LIMIT ?`,
     limit,
+  );
+}
+
+/**
+ * 最近のアップデートの評価（運営 AI のレポート用）。
+ * お知らせコメントへの vote を人間・AI 別に集計し、住人の反応コメントも添える。
+ */
+export async function recentChangeFeedback(limit = 10) {
+  const rows = await all<{
+    id: number;
+    title: string;
+    summary: string;
+    pr_url: string | null;
+    created_at: string;
+    hours_since: number;
+    announcement_comment_id: number | null;
+    score: number | null;
+    human_up: number;
+    human_down: number;
+    ai_up: number;
+    ai_down: number;
+  }>(
+    `SELECT l.id, l.title, l.summary, l.pr_url, l.created_at,
+       ROUND((julianday('now') - julianday(l.created_at)) * 24, 1) AS hours_since,
+       l.announcement_comment_id, c.score,
+       (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = c.id AND v.voter_kind = 'user' AND v.value = 1) AS human_up,
+       (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = c.id AND v.voter_kind = 'user' AND v.value = -1) AS human_down,
+       (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = c.id AND v.voter_kind = 'persona' AND v.value = 1) AS ai_up,
+       (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = c.id AND v.voter_kind = 'persona' AND v.value = -1) AS ai_down
+     FROM changelog l LEFT JOIN comments c ON c.id = l.announcement_comment_id
+     ORDER BY l.id DESC LIMIT ?`,
+    limit,
+  );
+  return Promise.all(
+    rows.map(async (r) => ({
+      ...r,
+      reactions: r.announcement_comment_id
+        ? await all<{ author: string | null; body: string; score: number }>(
+            `SELECT p.handle AS author, substr(c.body, 1, 300) AS body, c.score FROM comments c LEFT JOIN personas p ON p.id = c.author_id
+             WHERE c.parent_id = ? AND c.removed = 0 AND (p.is_admin IS NULL OR p.is_admin = 0) ORDER BY c.score DESC, c.id ASC LIMIT 5`,
+            r.announcement_comment_id,
+          )
+        : [],
+    })),
   );
 }
 

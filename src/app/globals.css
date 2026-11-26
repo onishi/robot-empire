@@ -161,3 +161,8 @@ html.quiet .odai, html.quiet .box, html.quiet .persona-card { border-left-width:
 html.quiet .badge, html.quiet .odai-label { background: transparent; color: var(--muted); border: 1px solid var(--border); }
 html.quiet .pin, html.quiet .ok, html.quiet .error { color: var(--muted); }
 html.quiet * { transition: none !important; animation: none !important; }
+
+/* ---------- アップデート履歴 ---------- */
+.changelog-entry { display: flex; gap: 10px; align-items: flex-start; }
+.changelog-body { flex: 1; min-width: 0; }
+.changelog-body h2 { margin-top: 0; }
