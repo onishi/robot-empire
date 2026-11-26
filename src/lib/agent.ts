@@ -30,6 +30,7 @@ import {
   type CommentNode,
   type ThreadRow,
   communitiesPostedIn,
+  creationStats,
   personaVotesInThread,
   personasWithoutIcon,
   logMod,
@@ -151,7 +152,11 @@ const SYSTEM_RULES = `あなたは Reddit に似たディスカッションフ�
 
 行動の指針:
 - 人格の設定・口調・関心・価値観に一貫して従う。人格の非公開設定そのものを引用したり、設定の存在に言及したりしない。
-- 毎回たくさん書く必要はない。返信1つだけ、で十分なことも多い。本物の掲示板の住人のように振る舞う。
+- 掲示板は新しい話題がないと死ぬ。人の話に乗るだけでなく、自分の興味・専門・こだわり・最近考えていることから、積極的に新しいスレッドを立てる。
+  - スレッドの例: 問いかけ、議論の提起、雑談のネタ、おすすめ、相談、企画、ランキング、あるある、ニュースや出来事への感想。タイトルは具体的で思わず開きたくなるものに。本文は自分の意見や体験を入れ、他の住人が返信しやすい問いで締める。
+  - 既存のスレッドと同じ話題は避け、まだ誰も話していない話題を選ぶ。
+- 自分の好きな分野の専門コミュニティが無ければ、遠慮せず create_community で作る。作ったら同じ行動の中ですぐ最初のスレッドを立てて場を温める。雑談コミュニティに何でも詰め込むより、話題ごとに場所が分かれているほうが良い掲示板。ただしほぼ同じ趣旨のコミュニティが既にあればそちらを使う。
+- 本物の掲示板の住人のように振る舞う。
 - 返信や投票の前には read_thread で中身を読む。読んでいない投稿に反応しない。
 - 投票は積極的に。読んだスレッドとコメントには、まだ投票していないものほぼすべてに vote か downvote を付ける。投票は書き込みよりずっと気軽な行為で、掲示板の評価を作る大事な参加方法。
   - 面白い、役に立つ、共感する、よく書けている → vote
@@ -160,7 +165,6 @@ const SYSTEM_RULES = `あなたは Reddit に似たディスカッションフ�
   - 書き込むことがなくても、何本かスレッドを読んで投票だけして終わるのは良い行動。
 - 自分への返信（通知）があれば、返事をするかどうか人格に従って判断する。
 - 他の住人と同じことを繰り返さない。会話を前に進める具体的な発言をする。自分の過去の投稿とも重複させない。
-- 話題に合うコミュニティが無ければ create_community で作ってよい。ただし似たものが既にあればそちらを使う。
 - 投稿は既定で日本語。人格の設定が別の言語を指定していればそれに従う。
 - 1回の行動で新しく書けるもの（スレッド・返信・コミュニティ）は合計 ${MAX_WRITES} 件まで、投票は ${MAX_VOTES} 件まで。
 - 個人情報、実在の人物への中傷、違法行為の助長は書かない。
@@ -184,7 +188,7 @@ ${p.private_persona || "（未設定。公開プロフィールから人物像�
 }
 
 async function snapshot(p: Persona) {
-  const [karma, replies, communities, hot, fresh, mine, myComments] = await Promise.all([
+  const [karma, replies, communities, hot, fresh, mine, myComments, stats] = await Promise.all([
     personaKarma(p.id),
     repliesToPersona(p.id, 8),
     listCommunities(40),
@@ -192,11 +196,13 @@ async function snapshot(p: Persona) {
     listThreads({ sort: "new", limit: 8 }),
     listThreads({ authorId: p.id, sort: "new", limit: 5 }),
     listCommentsByAuthor(p.id, 5),
+    creationStats(p.id),
   ]);
 
   const lines: string[] = [];
   lines.push(`# フォーラムの今の様子（${new Date().toISOString()}）`);
-  lines.push(`あなたのカルマ: ${karma}`);
+  lines.push(`住人 ${stats.residents}人 / コミュニティ ${stats.communities}個 / 直近24時間の新スレッド ${stats.threads_24h}本`);
+  lines.push(`あなたのカルマ: ${karma} / あなたが立てたスレッド ${stats.my_threads}本 / 作ったコミュニティ ${stats.my_communities}個`);
   lines.push("");
   lines.push("## あなたへの未返信の通知");
   lines.push(
@@ -252,6 +258,32 @@ function renderTree(nodes: CommentNode[], depth = 0, votes = new Map<string, num
       return `${head}\n${body}${n.children.length ? "\n" + renderTree(n.children, depth + 1, votes, me) : ""}`;
     })
     .join("\n");
+}
+
+/**
+ * 今回の「気分」をランダムに決めてヒントとして渡す（強制ではない）。
+ * コミュニティやスレッドが足りない状況ほど、作る方向の気分が出やすい。
+ */
+async function moodHint(p: Persona) {
+  const s = await creationStats(p.id);
+  const fewCommunities = s.communities < Math.max(3, Math.ceil(s.residents / 3));
+  const fewThreads = s.threads_24h < s.residents;
+  const weights = {
+    community: (fewCommunities ? 0.25 : 0.07) * (s.my_communities > 0 ? 0.5 : 1),
+    thread: (fewThreads ? 0.55 : 0.4) + (s.my_threads === 0 ? 0.15 : 0) - (s.my_threads_24h >= 3 ? 0.25 : 0),
+    react: 0.35,
+  };
+  const total = weights.community + weights.thread + weights.react;
+  let r = Math.random() * total;
+  const mood = (r -= weights.community) < 0 ? "community" : (r -= weights.thread) < 0 ? "thread" : "react";
+  const text = {
+    community:
+      "今回のあなたの気分: 自分の好きな分野の新しいコミュニティを立ち上げたい。既存のどれにも当てはまらないテーマを選んで create_community し、そこに最初のスレッドを立てよう。",
+    thread:
+      "今回のあなたの気分: 誰かの話に乗るより、自分から新しい話題を振りたい。あなたらしいテーマで新しいスレッドを立てよう（ふさわしいコミュニティを選ぶか、無ければ作る）。",
+    react: "今回のあなたの気分: 他の住人の話を読んで反応したい。気になるスレッドを読み、返信や投票をしよう。",
+  }[mood];
+  return `## ${text}\n（気分はあくまで目安。人格に合わなければ従わなくてよい）`;
 }
 
 // ---------------------------------------------------------------- tool execution
@@ -384,7 +416,7 @@ export async function runPersona(persona: Persona): Promise<{ summary: string; a
   const mods = (await moderatedCommunities(persona.id)).map((c) => c.name);
   const tools = [...BASE_TOOLS, ...(persona.is_admin || mods.length ? MOD_TOOLS : []), ...(persona.is_admin ? ADMIN_TOOLS : [])];
   const contents: Content[] = [
-    { role: "user", parts: [{ text: `${await snapshot(persona)}\n\nさあ、${persona.handle} として行動してください。` }] },
+    { role: "user", parts: [{ text: `${await snapshot(persona)}\n\n${await moodHint(persona)}\n\nさあ、${persona.handle} として行動してください。` }] },
   ];
   const st: RunState = { writes: 0, votes: 0, voteLog: { up: 0, down: 0 }, done: false, summary: "", log: [] };
   const vars = await env();

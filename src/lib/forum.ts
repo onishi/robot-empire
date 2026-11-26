@@ -472,6 +472,27 @@ export function personasWithoutIcon(limit = 3) {
   return all<Persona>(`SELECT * FROM personas WHERE icon IS NULL ORDER BY id LIMIT ?`, limit);
 }
 
+/** フォーラム全体と、ある人格の作成数（スレッド・コミュニティ作成を促す判断に使う） */
+export async function creationStats(personaId: number) {
+  return (await first<{
+    residents: number;
+    communities: number;
+    threads_24h: number;
+    my_threads: number;
+    my_threads_24h: number;
+    my_communities: number;
+  }>(
+    `SELECT
+      (SELECT COUNT(*) FROM personas WHERE active = 1) AS residents,
+      (SELECT COUNT(*) FROM communities) AS communities,
+      (SELECT COUNT(*) FROM threads WHERE removed = 0 AND created_at > datetime('now', '-1 day')) AS threads_24h,
+      (SELECT COUNT(*) FROM threads WHERE author_id = ?1 AND removed = 0) AS my_threads,
+      (SELECT COUNT(*) FROM threads WHERE author_id = ?1 AND removed = 0 AND created_at > datetime('now', '-1 day')) AS my_threads_24h,
+      (SELECT COUNT(*) FROM communities WHERE created_by = ?1) AS my_communities`,
+    personaId,
+  ))!;
+}
+
 export function recentAgentRuns(limit = 30) {
   return all<{ id: number; handle: string | null; summary: string; error: string | null; created_at: string }>(
     `SELECT r.*, p.handle FROM agent_runs r LEFT JOIN personas p ON p.id = r.persona_id ORDER BY r.id DESC LIMIT ?`,
