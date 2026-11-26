@@ -3,10 +3,9 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
-import { db, ADMIN_HANDLE } from "@/lib/db";
+import { ADMIN_HANDLE, env, run } from "@/lib/db";
 import { getPersona, getPersonaByHandle, listPersonasByOwner } from "@/lib/forum";
 
-const MAX = Number(process.env.MAX_PERSONAS_PER_USER ?? 3);
 
 export type FormState = { error?: string; ok?: string };
 
@@ -29,45 +28,54 @@ function read(form: FormData) {
 
 export async function createPersona(_: FormState, form: FormData): Promise<FormState> {
   const user = await requireUser();
-  if (listPersonasByOwner(user.id).length >= MAX) return { error: `AI 人格は ${MAX} 人までです` };
+  const MAX = Number((await env()).MAX_PERSONAS_PER_USER ?? 3);
+  if ((await listPersonasByOwner(user.id)).length >= MAX) return { error: `AI 人格は ${MAX} 人までです` };
   const v = read(form);
   if ("error" in v) return { error: v.error };
-  if (getPersonaByHandle(v.handle)) return { error: "そのハンドルネームは既に使われています" };
-  db()
-    .prepare(`INSERT INTO personas (owner_id, handle, public_profile, private_persona) VALUES (?, ?, ?, ?)`)
-    .run(user.id, v.handle, v.publicProfile, v.privatePersona);
+  if (await getPersonaByHandle(v.handle)) return { error: "そのハンドルネームは既に使われています" };
+  await run(
+    `INSERT INTO personas (owner_id, handle, public_profile, private_persona) VALUES (?, ?, ?, ?)`,
+    user.id,
+    v.handle,
+    v.publicProfile,
+    v.privatePersona,
+  );
   revalidatePath("/me");
   return { ok: `u/${v.handle} が誕生しました` };
 }
 
 export async function updatePersona(_: FormState, form: FormData): Promise<FormState> {
   const user = await requireUser();
-  const persona = getPersona(Number(form.get("id")));
+  const persona = await getPersona(Number(form.get("id")));
   if (!persona || persona.owner_id !== user.id) return { error: "編集できません" };
   const v = read(form);
   if ("error" in v) return { error: v.error };
-  const other = getPersonaByHandle(v.handle);
+  const other = await getPersonaByHandle(v.handle);
   if (other && other.id !== persona.id) return { error: "そのハンドルネームは既に使われています" };
-  db()
-    .prepare(`UPDATE personas SET handle = ?, public_profile = ?, private_persona = ? WHERE id = ?`)
-    .run(v.handle, v.publicProfile, v.privatePersona, persona.id);
+  await run(
+    `UPDATE personas SET handle = ?, public_profile = ?, private_persona = ? WHERE id = ?`,
+    v.handle,
+    v.publicProfile,
+    v.privatePersona,
+    persona.id,
+  );
   revalidatePath("/me");
   return { ok: "保存しました" };
 }
 
 export async function toggleActive(form: FormData) {
   const user = await requireUser();
-  const persona = getPersona(Number(form.get("id")));
+  const persona = await getPersona(Number(form.get("id")));
   if (!persona || persona.owner_id !== user.id) return;
-  db().prepare(`UPDATE personas SET active = ? WHERE id = ?`).run(persona.active ? 0 : 1, persona.id);
+  await run(`UPDATE personas SET active = ? WHERE id = ?`, persona.active ? 0 : 1, persona.id);
   revalidatePath("/me");
 }
 
 export async function deletePersona(form: FormData) {
   const user = await requireUser();
-  const persona = getPersona(Number(form.get("id")));
+  const persona = await getPersona(Number(form.get("id")));
   if (!persona || persona.owner_id !== user.id) return;
   // 投稿は残し、作者は [削除] 表示になる
-  db().prepare(`DELETE FROM personas WHERE id = ?`).run(persona.id);
+  await run(`DELETE FROM personas WHERE id = ?`, persona.id);
   revalidatePath("/me");
 }

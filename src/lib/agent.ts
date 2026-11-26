@@ -1,5 +1,5 @@
 import { ApiError, FinishReason, GoogleGenAI, ThinkingLevel, type Content, type FunctionDeclaration, type Part } from "@google/genai";
-import { db } from "./db";
+import { all, env, run } from "./db";
 import {
   type Persona,
   type TargetType,
@@ -26,20 +26,23 @@ import {
   setPinned,
   updateCommunity,
   type CommentNode,
+  type ThreadRow,
+  communitiesPostedIn,
   logMod,
 } from "./forum";
 
-const MODEL = process.env.AI_MODEL ?? "gemini-3.5-flash-lite";
-const THINKING = (process.env.AI_THINKING_LEVEL ?? "LOW").toUpperCase() as keyof typeof ThinkingLevel;
+const DEFAULT_MODEL = "gemini-3.5-flash-lite";
 const MAX_TURNS = 12;
 const MAX_WRITES = 3; // 1回の行動で作れる投稿・コメント・コミュニティの上限
 const MAX_VOTES = 10;
 
 let client: GoogleGenAI | undefined;
-function gemini() {
-  const apiKey = process.env.GOOGLE_AI_API_KEY ?? process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
-  if (!apiKey) throw new Error("GOOGLE_AI_API_KEY が設定されていません");
-  client ??= new GoogleGenAI({ apiKey });
+async function gemini() {
+  if (!client) {
+    const apiKey = (await env()).GOOGLE_AI_API_KEY;
+    if (!apiKey) throw new Error("GOOGLE_AI_API_KEY が設定されていません");
+    client = new GoogleGenAI({ apiKey });
+  }
   return client;
 }
 
@@ -181,14 +184,16 @@ ${p.private_persona || "（未設定。公開プロフィールから人物像�
 役割: ${role}`;
 }
 
-function snapshot(p: Persona) {
-  const karma = personaKarma(p.id);
-  const replies = repliesToPersona(p.id, 8);
-  const communities = listCommunities(40);
-  const hot = listThreads({ sort: "hot", limit: 15 });
-  const fresh = listThreads({ sort: "new", limit: 8 });
-  const mine = listThreads({ authorId: p.id, sort: "new", limit: 5 });
-  const myComments = listCommentsByAuthor(p.id, 5);
+async function snapshot(p: Persona) {
+  const [karma, replies, communities, hot, fresh, mine, myComments] = await Promise.all([
+    personaKarma(p.id),
+    repliesToPersona(p.id, 8),
+    listCommunities(40),
+    listThreads({ sort: "hot", limit: 15 }),
+    listThreads({ sort: "new", limit: 8 }),
+    listThreads({ authorId: p.id, sort: "new", limit: 5 }),
+    listCommentsByAuthor(p.id, 5),
+  ]);
 
   const lines: string[] = [];
   lines.push(`# フォーラムの今の様子（${new Date().toISOString()}）`);
@@ -225,7 +230,7 @@ function snapshot(p: Persona) {
   return lines.join("\n");
 }
 
-function threadLine(t: ReturnType<typeof listThreads>[number]) {
+function threadLine(t: ThreadRow) {
   return `- [thread ${t.id}] r/${t.community_name}「${t.title}」 by ${t.author_handle ?? "削除済み"} — score ${t.score}, コメント ${t.comment_count}${t.pinned ? " 📌" : ""}`;
 }
 
@@ -249,44 +254,46 @@ function renderTree(nodes: CommentNode[], depth = 0): string {
 
 type RunState = { writes: number; votes: number; done: boolean; summary: string; log: string[] };
 
-function execTool(p: Persona, name: string, input: Record<string, unknown>, st: RunState): string {
+async function execTool(p: Persona, name: string, input: Record<string, unknown>, st: RunState): Promise<string> {
   const s = (k: string) => (input[k] == null ? null : String(input[k]));
   const n = (k: string) => (input[k] == null ? null : Number(input[k]));
   const needWrite = () => {
     if (st.writes >= MAX_WRITES) throw new Error(`今回書ける件数（${MAX_WRITES}）に達しました。finish してください`);
     st.writes++;
   };
-  const community = () => {
-    const c = getCommunityByName(String(s("community") ?? "").replace(/^r\//, "").toLowerCase());
+  const community = async () => {
+    const c = await getCommunityByName(String(s("community") ?? "").replace(/^r\//, "").toLowerCase());
     if (!c) throw new Error(`r/${s("community")} は存在しません`);
     return c;
   };
 
   switch (name) {
     case "list_communities": {
-      const cs = listCommunities(100);
+      const cs = await listCommunities(100);
       return cs.length ? cs.map((c) => `r/${c.name}「${c.title}」(${c.thread_count}) ${clip(c.description, 120)}`).join("\n") : "コミュニティはまだありません。";
     }
     case "list_threads": {
-      const c = s("community") ? community() : undefined;
-      const ts = listThreads({ communityId: c?.id, sort: (s("sort") as "hot" | "new" | "top") ?? "hot", limit: 25 });
+      const c = s("community") ? await community() : undefined;
+      const ts = await listThreads({ communityId: c?.id, sort: (s("sort") as "hot" | "new" | "top") ?? "hot", limit: 25 });
       return ts.length ? ts.map(threadLine).join("\n") : "スレッドはまだありません。";
     }
     case "read_thread": {
-      const t = getThread(n("thread_id")!);
+      const t = await getThread(n("thread_id")!);
       if (!t || t.removed) return "スレッドが見つかりません（削除済みかもしれません）。";
-      const c = getCommunityByName(t.community_name)!;
-      return `r/${t.community_name}「${c.title}」\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}\n\n${t.body}\n\n--- コメント ${t.comment_count}件 ---\n${renderTree(commentTree(t.id)) || "（まだなし）"}`;
+      const c = (await getCommunityByName(t.community_name))!;
+      const tree = renderTree(await commentTree(t.id));
+      return `r/${t.community_name}「${c.title}」\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}\n\n${t.body}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}`;
     }
     case "view_profile": {
-      const other = getPersonaByHandle(String(s("handle")));
+      const other = await getPersonaByHandle(String(s("handle")));
       if (!other) return "その住人は見つかりません。";
-      const recent = listCommentsByAuthor(other.id, 5).map((c) => `- r/${c.community_name}「${c.thread_title}」: ${clip(c.body, 100)}`);
-      return `${other.handle}${other.is_admin ? "（管理人）" : ""}\nカルマ: ${personaKarma(other.id)}\n${other.public_profile}\n\n最近の発言:\n${recent.join("\n") || "なし"}`;
+      const karma = await personaKarma(other.id);
+      const recent = (await listCommentsByAuthor(other.id, 5)).map((c) => `- r/${c.community_name}「${c.thread_title}」: ${clip(c.body, 100)}`);
+      return `${other.handle}${other.is_admin ? "（管理人）" : ""}\nカルマ: ${karma}\n${other.public_profile}\n\n最近の発言:\n${recent.join("\n") || "なし"}`;
     }
     case "create_community": {
       needWrite();
-      const c = createCommunity(p, {
+      const c = await createCommunity(p, {
         name: String(s("name")),
         title: String(s("title")),
         description: String(s("description") ?? ""),
@@ -296,47 +303,47 @@ function execTool(p: Persona, name: string, input: Record<string, unknown>, st: 
       return `r/${c.name} を作りました。`;
     }
     case "create_thread": {
-      const c = community();
+      const c = await community();
       needWrite();
-      const id = createThread(p, c.id, String(s("title")), String(s("body") ?? ""));
+      const id = await createThread(p, c.id, String(s("title")), String(s("body") ?? ""));
       st.log.push(`r/${c.name} にスレッド ${id}`);
       return `スレッド ${id} を立てました。`;
     }
     case "reply": {
       needWrite();
-      const id = createComment(p, n("thread_id")!, n("parent_comment_id"), String(s("body")));
+      const id = await createComment(p, n("thread_id")!, n("parent_comment_id"), String(s("body")));
       st.log.push(`thread ${n("thread_id")} にコメント ${id}`);
       return `コメント ${id} を投稿しました。`;
     }
     case "vote": {
       if (st.votes >= MAX_VOTES) throw new Error("今回の投票上限に達しました");
       const v = n("value") === -1 ? -1 : 1;
-      const score = castVote(s("target_type") as TargetType, n("target_id")!, "persona", p.id, v);
+      const score = await castVote(s("target_type") as TargetType, n("target_id")!, "persona", p.id, v);
       st.votes++;
       return `投票しました（現在のスコア ${score}）。`;
     }
     case "mod_remove": {
-      removeContent(p, s("target_type") as TargetType, n("target_id")!, String(s("reason") ?? ""));
+      await removeContent(p, s("target_type") as TargetType, n("target_id")!, String(s("reason") ?? ""));
       st.log.push(`${s("target_type")} ${n("target_id")} を削除`);
       return "削除しました。モデレーションログに記録されました。";
     }
     case "mod_pin": {
-      setPinned(p, n("thread_id")!, Boolean(input.pinned), String(s("reason") ?? ""));
+      await setPinned(p, n("thread_id")!, Boolean(input.pinned), String(s("reason") ?? ""));
       return input.pinned ? "ピン留めしました。" : "ピン留めを外しました。";
     }
     case "mod_update_community": {
-      const c = community();
-      if (!isModerator(p, c.id)) throw new Error("このコミュニティのモデレーターではありません");
-      updateCommunity(c.id, { description: s("description"), rules: s("rules") });
-      logMod(c.id, p.id, "update_community", null, null, "説明・ルールを更新");
+      const c = await community();
+      if (!(await isModerator(p, c.id))) throw new Error("このコミュニティのモデレーターではありません");
+      await updateCommunity(c.id, { description: s("description"), rules: s("rules") });
+      await logMod(c.id, p.id, "update_community", null, null, "説明・ルールを更新");
       return "更新しました。";
     }
     case "admin_appoint_moderator": {
       if (!p.is_admin) throw new Error("管理人だけが任命できます");
-      const c = community();
-      const target = getPersonaByHandle(String(s("handle")));
+      const c = await community();
+      const target = await getPersonaByHandle(String(s("handle")));
       if (!target) throw new Error("その住人は見つかりません");
-      const ok = appointModerator(c.id, target, p, String(s("reason") ?? ""));
+      const ok = await appointModerator(c.id, target, p, String(s("reason") ?? ""));
       if (ok) st.log.push(`${target.handle} を r/${c.name} のモデレーターに任命`);
       return ok ? `${target.handle} を r/${c.name} のモデレーターに任命しました。` : "既にモデレーターです。";
     }
@@ -352,39 +359,39 @@ function execTool(p: Persona, name: string, input: Record<string, unknown>, st: 
 
 // ---------------------------------------------------------------- run
 
-export function pickNextPersona(): Persona | undefined {
+export async function pickNextPersona(): Promise<Persona | undefined> {
   // 長く動いていない人格ほど選ばれやすい（上位3人からランダム）
-  const candidates = db()
-    .prepare(
-      `SELECT * FROM personas WHERE active = 1
-       ORDER BY CASE WHEN last_acted_at IS NULL THEN 0 ELSE 1 END, last_acted_at ASC LIMIT 3`,
-    )
-    .all() as Persona[];
+  const candidates = await all<Persona>(
+    `SELECT * FROM personas WHERE active = 1
+     ORDER BY CASE WHEN last_acted_at IS NULL THEN 0 ELSE 1 END, last_acted_at ASC LIMIT 3`,
+  );
   return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
 export async function runPersona(persona: Persona): Promise<{ summary: string; actions: string[] }> {
-  db().prepare(`UPDATE personas SET last_acted_at = datetime('now') WHERE id = ?`).run(persona.id);
+  await run(`UPDATE personas SET last_acted_at = datetime('now') WHERE id = ?`, persona.id);
 
-  const mods = moderatedCommunities(persona.id).map((c) => c.name);
+  const mods = (await moderatedCommunities(persona.id)).map((c) => c.name);
   const tools = [...BASE_TOOLS, ...(persona.is_admin || mods.length ? MOD_TOOLS : []), ...(persona.is_admin ? ADMIN_TOOLS : [])];
   const contents: Content[] = [
-    { role: "user", parts: [{ text: `${snapshot(persona)}\n\nさあ、${persona.handle} として行動してください。` }] },
+    { role: "user", parts: [{ text: `${await snapshot(persona)}\n\nさあ、${persona.handle} として行動してください。` }] },
   ];
   const st: RunState = { writes: 0, votes: 0, done: false, summary: "", log: [] };
+  const vars = await env();
+  const thinking = (vars.AI_THINKING_LEVEL ?? "LOW").toUpperCase() as keyof typeof ThinkingLevel;
   let inputTokens = 0;
   let outputTokens = 0;
   let error: string | null = null;
 
   try {
     for (let turn = 0; turn < MAX_TURNS && !st.done; turn++) {
-      const response = await gemini().models.generateContent({
-        model: MODEL,
+      const response = await (await gemini()).models.generateContent({
+        model: vars.AI_MODEL || DEFAULT_MODEL,
         contents,
         config: {
           systemInstruction: `${SYSTEM_RULES}\n\n${personaBlock(persona, mods)}`,
           tools: [{ functionDeclarations: tools.map(toDecl) }],
-          thinkingConfig: { thinkingLevel: ThinkingLevel[THINKING] ?? ThinkingLevel.LOW },
+          thinkingConfig: { thinkingLevel: ThinkingLevel[thinking] ?? ThinkingLevel.LOW },
           maxOutputTokens: 8192,
         },
       });
@@ -405,37 +412,43 @@ export async function runPersona(persona: Persona): Promise<{ summary: string; a
         break;
       }
 
-      const parts: Part[] = calls.map((call) => {
+      // 書き込みの順序と上限を守るため、1つずつ順番に実行する
+      const parts: Part[] = [];
+      for (const call of calls) {
         const name = call.name ?? "";
         try {
-          const result = execTool(persona, name, (call.args ?? {}) as Record<string, unknown>, st);
-          return { functionResponse: { id: call.id, name, response: { output: result } } };
+          const result = await execTool(persona, name, (call.args ?? {}) as Record<string, unknown>, st);
+          parts.push({ functionResponse: { id: call.id, name, response: { output: result } } });
         } catch (e) {
-          return { functionResponse: { id: call.id, name, response: { error: (e as Error).message } } };
+          parts.push({ functionResponse: { id: call.id, name, response: { error: (e as Error).message } } });
         }
-      });
+      }
       contents.push({ role: "user", parts });
     }
   } catch (e) {
     error = e instanceof ApiError ? `API ${e.status}: ${e.message}` : (e as Error).message;
   }
 
-  // 書き込みのあったコミュニティで昇格判定
-  const fresh = getPersona(persona.id);
-  if (fresh) for (const c of listCommunities(200)) checkPromotion(fresh, c.id);
+  // 投稿したことのあるコミュニティで昇格判定
+  const fresh = await getPersona(persona.id);
+  if (fresh) for (const id of await communitiesPostedIn(fresh.id)) await checkPromotion(fresh, id);
 
   const summary = st.summary || st.log.join(" / ") || (error ? "" : "眺めただけ");
-  db()
-    .prepare(`INSERT INTO agent_runs (persona_id, summary, error, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?)`)
-    .run(persona.id, summary, error, inputTokens, outputTokens);
+  await run(
+    `INSERT INTO agent_runs (persona_id, summary, error, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?)`,
+    persona.id,
+    summary,
+    error,
+    inputTokens,
+    outputTokens,
+  );
   if (error) throw new Error(error);
   return { summary, actions: st.log };
 }
 
 export async function tick() {
-  const persona = pickNextPersona();
+  const persona = await pickNextPersona();
   if (!persona) return null;
   const result = await runPersona(persona);
   return { handle: persona.handle, ...result };
 }
-

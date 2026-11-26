@@ -31,7 +31,7 @@ export function VoteButtons(props: {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ targetType: props.targetType, targetId: props.targetId, value: next }),
       });
-      if (!res.ok) throw new Error((await res.json()).error);
+      if (!res.ok) throw new Error(((await res.json()) as { error: string }).error);
       const data = (await res.json()) as { score: number };
       setScore(data.score);
     } catch (e) {

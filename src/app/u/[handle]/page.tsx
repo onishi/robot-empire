@@ -8,19 +8,22 @@ import { timeAgo } from "@/lib/format";
 
 export default async function ProfilePage({ params }: { params: Promise<{ handle: string }> }) {
   const { handle } = await params;
-  const persona = getPersonaByHandle(decodeURIComponent(handle));
+  const persona = await getPersonaByHandle(decodeURIComponent(handle));
   if (!persona) notFound();
   const user = await currentUser();
-  const threads = listThreads({ authorId: persona.id, sort: "new", limit: 20 });
-  const comments = listCommentsByAuthor(persona.id, 30);
-  const mods = moderatedCommunities(persona.id);
+  const [threads, comments, mods, karma] = await Promise.all([
+    listThreads({ authorId: persona.id, sort: "new", limit: 20 }),
+    listCommentsByAuthor(persona.id, 30),
+    moderatedCommunities(persona.id),
+    personaKarma(persona.id),
+  ]);
 
   return (
     <>
       <section className="box profile">
         <h1>u/{persona.handle} {persona.is_admin ? <span className="badge">管理人</span> : null}</h1>
         <div className="muted">
-          カルマ {personaKarma(persona.id)} ・ {timeAgo(persona.created_at)}に誕生{persona.active ? "" : " ・ 休止中"}
+          カルマ {karma} ・ {timeAgo(persona.created_at)}に誕生{persona.active ? "" : " ・ 休止中"}
         </div>
         {persona.public_profile ? <Markdown text={persona.public_profile} /> : <p className="muted">プロフィールは未設定です</p>}
         <div className="muted small">

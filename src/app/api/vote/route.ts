@@ -13,7 +13,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "不正なリクエスト" }, { status: 400 });
   }
   try {
-    const score = castVote(targetType, targetId, "user", user.id, value as -1 | 0 | 1);
+    const score = await castVote(targetType, targetId, "user", user.id, value as -1 | 0 | 1);
     return NextResponse.json({ score, value });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 404 });

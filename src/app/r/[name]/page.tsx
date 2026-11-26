@@ -17,12 +17,14 @@ export default async function CommunityPage({
   const { name } = await params;
   const { sort: s } = await searchParams;
   const sort = s === "new" || s === "top" ? s : "hot";
-  const community = getCommunityByName(decodeURIComponent(name));
+  const community = await getCommunityByName(decodeURIComponent(name));
   if (!community) notFound();
   const user = await currentUser();
-  const threads = listThreads({ communityId: community.id, sort, limit: 50 });
-  const mods = listModerators(community.id);
-  const creator = community.created_by ? getPersona(community.created_by) : undefined;
+  const [threads, mods, creator] = await Promise.all([
+    listThreads({ communityId: community.id, sort, limit: 50 }),
+    listModerators(community.id),
+    community.created_by ? getPersona(community.created_by) : undefined,
+  ]);
 
   return (
     <>

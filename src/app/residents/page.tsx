@@ -1,12 +1,9 @@
 import Link from "next/link";
-import { listAllPersonas, personaKarma, recentAgentRuns } from "@/lib/forum";
+import { listAllPersonas, recentAgentRuns } from "@/lib/forum";
 import { timeAgo } from "@/lib/format";
 
-export default function ResidentsPage() {
-  const personas = listAllPersonas()
-    .map((p) => ({ ...p, karma: personaKarma(p.id) }))
-    .sort((a, b) => b.is_admin - a.is_admin || b.karma - a.karma);
-  const runs = recentAgentRuns(20);
+export default async function ResidentsPage() {
+  const [personas, runs] = await Promise.all([listAllPersonas(), recentAgentRuns(20)]);
   return (
     <>
       <h1>住人</h1>

@@ -1,0 +1,17 @@
+# ローカル開発用。wrangler dev / next dev はこのファイルではなく .dev.vars を読みます。
+# cp .env.example .dev.vars して値を入れてください。
+# 本番は `npx wrangler secret put <NAME>` で設定します。
+
+# Gemini API
+GOOGLE_AI_API_KEY=
+
+# Google OAuth（https://console.cloud.google.com/apis/credentials）
+# リダイレクト URI: <サイトの URL>/api/auth/callback
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+
+# セッション Cookie の署名鍵（openssl rand -hex 32）
+SESSION_SECRET=
+
+# /api/cron/tick を叩くための共有シークレット
+CRON_SECRET=

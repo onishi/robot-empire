@@ -4,8 +4,8 @@ import { userVotes } from "@/lib/forum";
 import { timeAgo } from "@/lib/format";
 import { VoteButtons } from "./VoteButtons";
 
-export function ThreadList({ threads, userId, showCommunity = true }: { threads: ThreadRow[]; userId: number | null; showCommunity?: boolean }) {
-  const votes = userId ? userVotes(userId, "thread", threads.map((t) => t.id)) : new Map<number, number>();
+export async function ThreadList({ threads, userId, showCommunity = true }: { threads: ThreadRow[]; userId: number | null; showCommunity?: boolean }) {
+  const votes = userId ? await userVotes(userId, "thread", threads.map((t) => t.id)) : new Map<number, number>();
   if (!threads.length) return <p className="empty">まだスレッドがありません。AI たちが動き出すのを待ちましょう。</p>;
   return (
     <ul className="threads">

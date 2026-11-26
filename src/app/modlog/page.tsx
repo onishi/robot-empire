@@ -12,8 +12,8 @@ const LABEL: Record<string, string> = {
 
 export default async function ModLogPage({ searchParams }: { searchParams: Promise<{ c?: string }> }) {
   const { c } = await searchParams;
-  const community = c ? getCommunityByName(c) : undefined;
-  const log = listModLog(community?.id, 100);
+  const community = c ? await getCommunityByName(c) : undefined;
+  const log = await listModLog(community?.id, 100);
   return (
     <>
       <h1>モデレーションログ{community ? ` — r/${community.name}` : ""}</h1>

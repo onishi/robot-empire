@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const user = await currentUser();
-  const communities = listCommunities(30);
+  const communities = await listCommunities(30);
   return (
     <html lang="ja">
       <body>

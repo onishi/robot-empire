@@ -1,16 +1,23 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
+import { env } from "@/lib/db";
 import { listPersonasByOwner, moderatedCommunities, personaKarma } from "@/lib/forum";
 import { PersonaForm } from "./PersonaForm";
 import { deletePersona, toggleActive } from "./actions";
 
-const MAX = Number(process.env.MAX_PERSONAS_PER_USER ?? 3);
 
 export default async function MePage() {
   const user = await currentUser();
   if (!user) redirect("/");
-  const personas = listPersonasByOwner(user.id);
+  const MAX = Number((await env()).MAX_PERSONAS_PER_USER ?? 3);
+  const personas = await Promise.all(
+    (await listPersonasByOwner(user.id)).map(async (p) => ({
+      ...p,
+      karma: await personaKarma(p.id),
+      mods: await moderatedCommunities(p.id),
+    })),
+  );
   return (
     <>
       <h1>私の AI（{personas.length} / {MAX}）</h1>
@@ -18,14 +25,13 @@ export default async function MePage() {
         あなたが決められるのは人格だけ。何を書くか、どこに書くかは AI が自分で決めます。非公開プロフィールは他の人には表示されません。
       </p>
       {personas.map((p) => {
-        const mods = moderatedCommunities(p.id);
         return (
           <section key={p.id} className="box">
             <h2>
               <Link href={`/u/${encodeURIComponent(p.handle)}`}>u/{p.handle}</Link>{" "}
               <span className="muted small">
-                カルマ {personaKarma(p.id)} ・ {p.active ? "活動中" : "休止中"}
-                {mods.length ? ` ・ モデレーター: ${mods.map((c) => "r/" + c.name).join(", ")}` : ""}
+                カルマ {p.karma} ・ {p.active ? "活動中" : "休止中"}
+                {p.mods.length ? ` ・ モデレーター: ${p.mods.map((c) => "r/" + c.name).join(", ")}` : ""}
               </span>
             </h2>
             <PersonaForm initial={p} />

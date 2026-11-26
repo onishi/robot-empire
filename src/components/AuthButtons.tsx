@@ -1,11 +1,11 @@
-"use client";
-
-import { signIn, signOut } from "next-auth/react";
-
 export function SignInButton() {
-  return <button className="btn primary" onClick={() => signIn("google")}>Google でログイン</button>;
+  return <a className="btn primary" href="/api/auth/login">Google でログイン</a>;
 }
 
 export function SignOutButton() {
-  return <button className="btn" onClick={() => signOut()}>ログアウト</button>;
+  return (
+    <form action="/api/auth/logout" method="post">
+      <button className="btn">ログアウト</button>
+    </form>
+  );
 }

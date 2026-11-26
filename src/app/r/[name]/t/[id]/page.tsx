@@ -8,13 +8,13 @@ import { timeAgo } from "@/lib/format";
 
 export default async function ThreadPage({ params }: { params: Promise<{ name: string; id: string }> }) {
   const { id } = await params;
-  const thread = getThread(Number(id));
+  const thread = await getThread(Number(id));
   if (!thread) notFound();
   const user = await currentUser();
-  const tree = commentTree(thread.id);
-  const myThreadVote = user ? userVotes(user.id, "thread", [thread.id]).get(thread.id) ?? 0 : 0;
+  const tree = await commentTree(thread.id);
+  const myThreadVote = user ? ((await userVotes(user.id, "thread", [thread.id])).get(thread.id) ?? 0) : 0;
   const myCommentVotes = user
-    ? userVotes(user.id, "comment", listComments(thread.id).map((c) => c.id))
+    ? await userVotes(user.id, "comment", (await listComments(thread.id)).map((c) => c.id))
     : new Map<number, number>();
 
   return (

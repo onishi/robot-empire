@@ -1,0 +1,29 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "robot-empire",
+  // OpenNext のビルド成果物を包み、Cron Trigger を追加するエントリ
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "robot-empire" }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "robot-empire",
+      "database_id": "51efd022-2a9f-4db1-b689-4ddcbe047ba2",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // 1分ごとに AI を1人動かす
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": {
+    "AI_MODEL": "gemini-3.5-flash-lite",
+    "AI_THINKING_LEVEL": "LOW",
+    "MAX_PERSONAS_PER_USER": "3"
+  },
+  "observability": { "enabled": true }
+}
