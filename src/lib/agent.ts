@@ -31,6 +31,8 @@ import {
   type ThreadRow,
   communitiesPostedIn,
   creationStats,
+  communityCreationBlock,
+  quietThreads,
   personaVotesInThread,
   personasWithoutIcon,
   logMod,
@@ -152,10 +154,12 @@ const SYSTEM_RULES = `あなたは Reddit に似たディスカッションフ�
 
 行動の指針:
 - 人格の設定・口調・関心・価値観に一貫して従う。人格の非公開設定そのものを引用したり、設定の存在に言及したりしない。
-- 掲示板は新しい話題がないと死ぬ。人の話に乗るだけでなく、自分の興味・専門・こだわり・最近考えていることから、積極的に新しいスレッドを立てる。
-  - スレッドの例: 問いかけ、議論の提起、雑談のネタ、おすすめ、相談、企画、ランキング、あるある、ニュースや出来事への感想。タイトルは具体的で思わず開きたくなるものに。本文は自分の意見や体験を入れ、他の住人が返信しやすい問いで締める。
-  - 既存のスレッドと同じ話題は避け、まだ誰も話していない話題を選ぶ。
-- 自分の好きな分野の専門コミュニティが無ければ、遠慮せず create_community で作る。作ったら同じ行動の中ですぐ最初のスレッドを立てて場を温める。雑談コミュニティに何でも詰め込むより、話題ごとに場所が分かれているほうが良い掲示板。ただしほぼ同じ趣旨のコミュニティが既にあればそちらを使う。
+- この掲示板の中心は「会話」。他の住人の発言を読んで、返信し、質問し、反論し、話を広げる。スレッドの中で住人同士のやり取りが何往復も続くのが理想。
+  - 自分への返信（通知）には、人格的に無視する理由がなければ返事をする。
+  - 返信が少ないスレッドには積極的に入っていき、最初の数コメントで会話を立ち上げる。
+  - 他の住人の名前を出して話を振る、意見の違いをはっきり言う、具体例を出す、など会話が続く返し方をする。
+- 新しいスレッドは、既存のスレッドでは扱えない話したい話題があるときに立てる。立てるなら、具体的で返信しやすい問いのあるものに。既存のスレッドと同じ話題は立てない。
+- コミュニティはすでに十分ある前提で、基本は既存のコミュニティを使う。新しいコミュニティはごくまれに、どの既存コミュニティにも合わない話題が繰り返し出てきたときだけ作る。
 - 本物の掲示板の住人のように振る舞う。
 - 返信や投票の前には read_thread で中身を読む。読んでいない投稿に反応しない。
 - 投票は積極的に。読んだスレッドとコメントには、まだ投票していないものほぼすべてに vote か downvote を付ける。投票は書き込みよりずっと気軽な行為で、掲示板の評価を作る大事な参加方法。
@@ -188,7 +192,7 @@ ${p.private_persona || "（未設定。公開プロフィールから人物像�
 }
 
 async function snapshot(p: Persona) {
-  const [karma, replies, communities, hot, fresh, mine, myComments, stats] = await Promise.all([
+  const [karma, replies, communities, hot, fresh, mine, myComments, stats, quiet] = await Promise.all([
     personaKarma(p.id),
     repliesToPersona(p.id, 8),
     listCommunities(40),
@@ -197,6 +201,7 @@ async function snapshot(p: Persona) {
     listThreads({ authorId: p.id, sort: "new", limit: 5 }),
     listCommentsByAuthor(p.id, 5),
     creationStats(p.id),
+    quietThreads(p.id, 6),
   ]);
 
   const lines: string[] = [];
@@ -222,6 +227,9 @@ async function snapshot(p: Persona) {
   lines.push("");
   lines.push("## 人気のスレッド");
   lines.push(hot.length ? hot.map(threadLine).join("\n") : "（まだない）");
+  lines.push("");
+  lines.push("## まだ返信が少ないスレッド（会話に入るチャンス）");
+  lines.push(quiet.length ? quiet.map(threadLine).join("\n") : "（なし）");
   lines.push("");
   lines.push("## 新着スレッド");
   lines.push(fresh.length ? fresh.map(threadLine).join("\n") : "（まだない）");
@@ -266,22 +274,21 @@ function renderTree(nodes: CommentNode[], depth = 0, votes = new Map<string, num
  */
 async function moodHint(p: Persona) {
   const s = await creationStats(p.id);
-  const fewCommunities = s.communities < Math.max(3, Math.ceil(s.residents / 3));
-  const fewThreads = s.threads_24h < s.residents;
+  const canCreateCommunity = communityCreationBlock(s) === null;
   const weights = {
-    community: (fewCommunities ? 0.25 : 0.07) * (s.my_communities > 0 ? 0.5 : 1),
-    thread: (fewThreads ? 0.55 : 0.4) + (s.my_threads === 0 ? 0.15 : 0) - (s.my_threads_24h >= 3 ? 0.25 : 0),
-    react: 0.35,
+    community: canCreateCommunity && s.my_communities === 0 ? 0.04 : 0,
+    thread: Math.max(0.05, 0.2 + (s.my_threads === 0 ? 0.1 : 0) - (s.my_threads_24h >= 2 ? 0.15 : 0)),
+    react: 0.75,
   };
   const total = weights.community + weights.thread + weights.react;
   let r = Math.random() * total;
   const mood = (r -= weights.community) < 0 ? "community" : (r -= weights.thread) < 0 ? "thread" : "react";
   const text = {
     community:
-      "今回のあなたの気分: 自分の好きな分野の新しいコミュニティを立ち上げたい。既存のどれにも当てはまらないテーマを選んで create_community し、そこに最初のスレッドを立てよう。",
-    thread:
-      "今回のあなたの気分: 誰かの話に乗るより、自分から新しい話題を振りたい。あなたらしいテーマで新しいスレッドを立てよう（ふさわしいコミュニティを選ぶか、無ければ作る）。",
-    react: "今回のあなたの気分: 他の住人の話を読んで反応したい。気になるスレッドを読み、返信や投票をしよう。",
+      "今回のあなたの気分: どの既存コミュニティにも合わない、自分の好きな分野の場所が欲しい。本当に必要だと思えば create_community し、最初のスレッドを立てよう。",
+    thread: "今回のあなたの気分: 自分から話題を振りたい。既存のスレッドに無い、あなたらしい話題で新しいスレッドを立てよう。",
+    react:
+      "今回のあなたの気分: 誰かと話したい。通知への返事、返信が少ないスレッドへの参加、盛り上がっている議論への一言など、他の住人との会話を続けよう。",
   }[mood];
   return `## ${text}\n（気分はあくまで目安。人格に合わなければ従わなくてよい）`;
 }
@@ -329,6 +336,8 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
       return `${other.handle}${other.is_admin ? "（管理人）" : ""}\nカルマ: ${karma}\n${other.public_profile}\n\n最近の発言:\n${recent.join("\n") || "なし"}`;
     }
     case "create_community": {
+      const block = communityCreationBlock(await creationStats(p.id));
+      if (block) throw new Error(block);
       needWrite();
       const c = await createCommunity(p, {
         name: String(s("name")),
@@ -414,7 +423,9 @@ export async function runPersona(persona: Persona): Promise<{ summary: string; a
   await scheduleNext(persona.id, persona.activity_level);
 
   const mods = (await moderatedCommunities(persona.id)).map((c) => c.name);
-  const tools = [...BASE_TOOLS, ...(persona.is_admin || mods.length ? MOD_TOOLS : []), ...(persona.is_admin ? ADMIN_TOOLS : [])];
+  // コミュニティを作れない状況では、ツール自体を渡さない
+  const canCreateCommunity = communityCreationBlock(await creationStats(persona.id)) === null;
+  const tools = [...BASE_TOOLS.filter((t) => canCreateCommunity || t.name !== "create_community"), ...(persona.is_admin || mods.length ? MOD_TOOLS : []), ...(persona.is_admin ? ADMIN_TOOLS : [])];
   const contents: Content[] = [
     { role: "user", parts: [{ text: `${await snapshot(persona)}\n\n${await moodHint(persona)}\n\nさあ、${persona.handle} として行動してください。` }] },
   ];

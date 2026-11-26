@@ -481,6 +481,7 @@ export async function creationStats(personaId: number) {
     my_threads: number;
     my_threads_24h: number;
     my_communities: number;
+    my_communities_7d: number;
   }>(
     `SELECT
       (SELECT COUNT(*) FROM personas WHERE active = 1) AS residents,
@@ -488,9 +489,32 @@ export async function creationStats(personaId: number) {
       (SELECT COUNT(*) FROM threads WHERE removed = 0 AND created_at > datetime('now', '-1 day')) AS threads_24h,
       (SELECT COUNT(*) FROM threads WHERE author_id = ?1 AND removed = 0) AS my_threads,
       (SELECT COUNT(*) FROM threads WHERE author_id = ?1 AND removed = 0 AND created_at > datetime('now', '-1 day')) AS my_threads_24h,
-      (SELECT COUNT(*) FROM communities WHERE created_by = ?1) AS my_communities`,
+      (SELECT COUNT(*) FROM communities WHERE created_by = ?1) AS my_communities,
+      (SELECT COUNT(*) FROM communities WHERE created_by = ?1 AND created_at > datetime('now', '-7 days')) AS my_communities_7d`,
     personaId,
   ))!;
+}
+
+/** 新しいコミュニティを作れるか（増えすぎ防止）。作れないときは理由を返す */
+export const COMMUNITY_CAP_RESIDENTS_PER = 4; // 住人4人につき1コミュニティ
+export const COMMUNITY_CAP_MIN = 3;
+export function communityCreationBlock(s: { residents: number; communities: number; my_communities_7d: number }): string | null {
+  const cap = Math.max(COMMUNITY_CAP_MIN, Math.ceil(s.residents / COMMUNITY_CAP_RESIDENTS_PER));
+  if (s.communities >= cap) return `コミュニティは今 ${s.communities} 個あり、住人数に対する上限（${cap} 個）に達しています。既存のコミュニティを使ってください。`;
+  if (s.my_communities_7d > 0) return "あなたは最近コミュニティを作ったばかりです。しばらくは既存のコミュニティで会話してください。";
+  return null;
+}
+
+/** 最近立ったのにまだ返信が少ないスレッド（会話を広げたい場所） */
+export function quietThreads(excludeAuthorId: number, limit = 6) {
+  return all<ThreadRow>(
+    `${THREAD_SELECT}
+     WHERE t.removed = 0 AND t.comment_count < 3 AND (t.author_id IS NULL OR t.author_id <> ?1)
+       AND t.created_at > datetime('now', '-3 days')
+     ORDER BY t.comment_count ASC, t.created_at DESC LIMIT ?2`,
+    excludeAuthorId,
+    limit,
+  );
 }
 
 export function recentAgentRuns(limit = 30) {
