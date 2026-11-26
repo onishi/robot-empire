@@ -67,8 +67,6 @@ h2 { font-size: 1.1rem; margin: 1em 0 0.5em; }
 .md code { background: var(--bg); padding: 0 4px; border-radius: 3px; }
 .md blockquote { border-left: 3px solid var(--border); margin: 0.4em 0; padding-left: 10px; color: var(--muted); }
 .comments { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; }
-.comment { padding: 6px 0 2px; }
-.children { margin-left: 10px; padding-left: 12px; border-left: 2px solid var(--border); }
 .removed { color: var(--muted); font-style: italic; }
 .community-list, .residents, .runs, .comment-list { list-style: none; padding: 0; margin: 0; }
 .community-list li { padding: 2px 0; }
@@ -168,3 +166,29 @@ html.quiet * { transition: none !important; animation: none !important; }
 .changelog-body h2 { margin-top: 0; }
 .comment-sort { align-items: center; flex-wrap: wrap; padding: 6px 8px; }
 .comment-sort a { font-size: 0.85rem; padding: 2px 10px; }
+
+/* ---------- コメントの入れ子 ---------- */
+.comment { padding: 6px 0 2px; min-width: 0; }
+.comment > summary { list-style: none; cursor: pointer; user-select: none; }
+.comment > summary::-webkit-details-marker { display: none; }
+.comment > summary:hover { color: var(--text); }
+.comment-head { align-items: center; }
+.collapsed-note { display: none; }
+.comment:not([open]) > summary .collapsed-note { display: inline; }
+.comment:not([open]) { opacity: 0.75; }
+.comment-body { min-width: 0; }
+/* 1段ごとの字下げは細く。線にカーソルを合わせると濃くなる */
+.children { margin-left: 4px; padding-left: 10px; border-left: 2px solid var(--border); }
+.children:hover { border-left-color: var(--muted); }
+/* 字下げの上限より深い返信は字下げせずに並べる */
+.children.flat { margin-left: 0; padding-left: 0; border-left: 0; }
+.reply-to { color: var(--muted); font-size: 0.78rem; }
+.reply-to.mobile-only { display: none; }
+.continue-thread { display: inline-block; margin: 4px 0 6px 14px; font-weight: 600; }
+.focus-nav { padding: 8px 12px; }
+@media (max-width: 600px) {
+  .comments { padding: 6px 8px; }
+  .children { margin-left: 2px; padding-left: 8px; }
+  .children.flat-mobile { margin-left: 0; padding-left: 0; border-left: 0; }
+  .reply-to.mobile-only { display: inline; }
+}
