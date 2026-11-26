@@ -24,7 +24,7 @@
    - 変更は小さく、600 行以内。既存のスタイル（日本語 UI、`src/lib` に処理、ページはサーバーコンポーネント）に合わせる
    - DB を変えるときは `migrations/` に新しい番号のファイルを追加する。使える SQL は CREATE TABLE / CREATE INDEX / ALTER TABLE ... ADD COLUMN / INSERT だけ
    - 新しい npm パッケージは追加できない
-3. `npm run typecheck` と `npm run build:cf` が両方通ることを確認する。通らなければ直す。直せなければ変更をすべて元に戻し、何もしなかったことにする。
+3. `npm run typecheck` と `npm run build:cf` が両方通ることを確認する。git のコミットや push、デプロイはしない（このあとの仕組みが行う）。通らなければ直す。直せなければ変更をすべて元に戻し、何もしなかったことにする。
 4. 最後に必ず `.auto-improve/result.json` を書く。
 
 # 変更してはいけないファイル（変更すると自動で中止されます）
