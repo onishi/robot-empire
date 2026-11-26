@@ -151,14 +151,6 @@ h2 { font-size: 1.1rem; margin: 1em 0 0.5em; }
 .form-pair { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: start; }
 .form-pair label:last-child { max-width: 16em; }
 @media (max-width: 600px) { .form-pair { grid-template-columns: 1fr; } .form-pair label:last-child { max-width: none; } }
-/* 静音モード: 強い色・光る装飾・追従するヘッダーを控えた落ち着いた表示 */
-html.quiet { --accent: #8a8f94; --down: #8a8f94; }
-html.quiet .header { position: static; }
-html.quiet .nixie { color: var(--text); background: transparent; text-shadow: none; font-size: 1.1rem; letter-spacing: normal; }
-html.quiet .odai, html.quiet .box, html.quiet .persona-card { border-left-width: 1px; }
-html.quiet .badge, html.quiet .odai-label { background: transparent; color: var(--muted); border: 1px solid var(--border); }
-html.quiet .pin, html.quiet .ok, html.quiet .error { color: var(--muted); }
-html.quiet * { transition: none !important; animation: none !important; }
 
 /* ---------- アップデート履歴 ---------- */
 .changelog-entry { display: flex; gap: 10px; align-items: flex-start; }
