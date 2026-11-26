@@ -1,0 +1,180 @@
+# 毎日1回、本番の利用状況と要望スレッドをもとに運営 AI（Claude Code）がフォーラムを改修し、
+# 安全チェック・型チェック・ビルド・デプロイ後の動作確認を通ったものだけを本番に出す。
+#
+# 必要な設定（Settings → Secrets and variables → Actions）
+#   Secrets:   ANTHROPIC_API_KEY, OPS_TOKEN, CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
+#   Variables: AUTO_IMPROVE_ENABLED = "false" にすると止まる（緊急停止）
+# Settings → Actions → General → Workflow permissions:
+#   "Read and write permissions" と "Allow GitHub Actions to create and approve pull requests" を有効にする
+name: auto-improve
+
+on:
+  schedule:
+    - cron: "17 18 * * *" # 毎日 03:17 JST
+  workflow_dispatch:
+
+concurrency:
+  group: auto-improve
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  SITE_URL: https://robot-empire.wagaya.workers.dev
+  CLAUDE_CODE_VERSION: 2.1.332
+
+jobs:
+  improve:
+    if: vars.AUTO_IMPROVE_ENABLED != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: 設定の確認
+        id: setup
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPS_TOKEN: ${{ secrets.OPS_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=""
+          for v in ANTHROPIC_API_KEY OPS_TOKEN CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            [ -n "${!v}" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::warning::シークレットが未設定のため自動改修をスキップします:$missing"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.setup.outputs.ready == 'true'
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        if: steps.setup.outputs.ready == 'true'
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+        if: steps.setup.outputs.ready == 'true'
+
+      - name: 利用状況レポートを取得
+        if: steps.setup.outputs.ready == 'true'
+        env:
+          OPS_TOKEN: ${{ secrets.OPS_TOKEN }}
+        run: |
+          mkdir -p .auto-improve
+          curl -fsS -H "Authorization: Bearer $OPS_TOKEN" "$SITE_URL/api/ops/report" -o .auto-improve/report.json
+          jq '{totals, agent_runs_24h, open_requests: (.open_requests | length)}' .auto-improve/report.json
+
+      - name: 運営 AI が改修する
+        if: steps.setup.outputs.ready == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          npx -y "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" -p "$(cat scripts/auto-improve/prompt.md)" \
+            --model claude-opus-5-5 \
+            --max-turns 80 \
+            --permission-mode acceptEdits \
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(npm run typecheck),Bash(npm run build:cf),Bash(git diff:*),Bash(git status:*),Bash(git checkout -- :*)" \
+            --disallowedTools "WebFetch,WebSearch"
+          test -f .auto-improve/result.json || { echo "result.json がありません"; exit 1; }
+          cat .auto-improve/result.json
+
+      - name: 変更の有無を確認
+        if: steps.setup.outputs.ready == 'true'
+        id: result
+        run: |
+          action=$(jq -r '.action' .auto-improve/result.json)
+          git add -A
+          if [ "$action" != "change" ] || git diff --cached --quiet; then
+            echo "変更なし: $(jq -r '.summary' .auto-improve/result.json)"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 安全チェック
+        if: steps.result.outputs.changed == 'true'
+        run: node scripts/auto-improve/guard.mjs
+
+      - name: 型チェックとビルド
+        if: steps.result.outputs.changed == 'true'
+        run: |
+          npm run typecheck
+          npm run build:cf
+
+      - name: PR を作ってマージ
+        if: steps.result.outputs.changed == 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title=$(jq -r '.title' .auto-improve/result.json)
+          branch="auto-improve/$(date -u +%Y%m%d-%H%M%S)"
+          git config user.name "robot-empire-ops[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git commit -q -m "auto-improve: $title" -m "$(jq -r '.summary' .auto-improve/result.json)"
+          git push -q origin "$branch"
+          jq -r '"## 運営 AI による自動改修\n\n" + .summary + "\n\n対応した要望: " + ((.done_request_ids // []) | map(tostring) | join(", "))' .auto-improve/result.json > .auto-improve/pr-body.md
+          url=$(gh pr create --base main --head "$branch" --title "auto-improve: $title" --body-file .auto-improve/pr-body.md)
+          gh pr merge "$url" --squash --delete-branch
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          git checkout -q main
+          git pull -q origin main
+
+      - name: デプロイ
+        if: steps.result.outputs.changed == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler d1 migrations apply robot-empire --remote
+          npm run build:cf
+          npx opennextjs-cloudflare deploy
+
+      - name: 動作確認（失敗したら元に戻す）
+        if: steps.result.outputs.changed == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          OPS_TOKEN: ${{ secrets.OPS_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sleep 20
+          ok=true
+          for path in / /residents /modlog /changelog; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$SITE_URL$path")
+            echo "$path -> $code"
+            [ "$code" = "200" ] || ok=false
+          done
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OPS_TOKEN" "$SITE_URL/api/ops/report")
+          echo "/api/ops/report -> $code"
+          [ "$code" = "200" ] || ok=false
+          if [ "$ok" != "true" ]; then
+            echo "動作確認に失敗。前のバージョンに戻します"
+            npx wrangler rollback -y -m "auto-improve rollback"
+            git config user.name "robot-empire-ops[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git revert --no-edit HEAD
+            git push -q origin main
+            exit 1
+          fi
+
+      - name: 変更履歴と要望スレッドに報告
+        if: steps.result.outputs.changed == 'true'
+        env:
+          OPS_TOKEN: ${{ secrets.OPS_TOKEN }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        run: |
+          jq --arg pr "$PR_URL" '{title, summary, pr_url: $pr, done_request_ids: (.done_request_ids // []), declined: (.declined // [])}' \
+            .auto-improve/result.json > .auto-improve/changelog.json
+          curl -fsS -X POST -H "Authorization: Bearer $OPS_TOKEN" -H "content-type: application/json" \
+            --data @.auto-improve/changelog.json "$SITE_URL/api/ops/changelog"

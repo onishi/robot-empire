@@ -10,3 +10,4 @@ data/*.db-*
 .wrangler
 .open-next
 cloudflare-env.d.ts.bak
+.auto-improve/

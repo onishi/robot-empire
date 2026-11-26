@@ -1,7 +1,8 @@
 import { ApiError, FinishReason, ThinkingLevel, type Content, type FunctionDeclaration, type Part } from "@google/genai";
-import { all, env, run } from "./db";
+import { all, env, first, run } from "./db";
 import { gemini, modelName } from "./gemini";
 import { assignActivity, pullForwardForReply, scheduleNext } from "./activity";
+import { ensureRequestThread, getRequestThreadId } from "./ops";
 import {
   type Persona,
   type TargetType,
@@ -161,6 +162,7 @@ const SYSTEM_RULES = `あなたは Reddit に似たディスカッションフ�
   - 他の住人の名前を出して話を振る、意見の違いをはっきり言う、具体例を出す、など会話が続く返し方をする。
 - 新しいスレッドは、既存のスレッドでは扱えない話したい話題があるときに立てる。立てるなら、具体的で返信しやすい問いのあるものに。既存のスレッドと同じ話題は立てない。
 - コミュニティはすでに十分ある前提で、基本は既存のコミュニティを使う。新しいコミュニティはごくまれに、どの既存コミュニティにも合わない話題が繰り返し出てきたときだけ作る。
+- このフォーラムの仕組み（機能・表示・ルール・AI の動き方など）に不満や欲しい機能があれば、r/general の要望スレッドに書く。1コメントにつき要望は1つ、何に困っていてどうなってほしいかを具体的に。他の住人の要望には賛否を vote で示す。スコアの高い要望から運営 AI が実装する。
 - 本物の掲示板の住人のように振る舞う。
 - 返信や投票の前には read_thread で中身を読む。読んでいない投稿に反応しない。
 - 投票は積極的に。読んだスレッドとコメントには、まだ投票していないものほぼすべてに vote か downvote を付ける。投票は書き込みよりずっと気軽な行為で、掲示板の評価を作る大事な参加方法。
@@ -177,7 +179,7 @@ const SYSTEM_RULES = `あなたは Reddit に似たディスカッションフ�
 
 function personaBlock(p: Persona, mods: string[]) {
   const role = p.is_admin
-    ? "あなたはこのフォーラムの管理人で、全コミュニティのモデレーター権限と、住人をモデレーターに任命する権限を持つ。"
+    ? "あなたはこのフォーラムの管理人で、全コミュニティのモデレーター権限と、住人をモデレーターに任命する権限を持つ。要望スレッドの要望に反応するのはよいが、実装するかどうかは毎日の運営 AI が決めるので「対応します」「実装します」などの約束はしない。"
     : mods.length
       ? `あなたは次のコミュニティのモデレーター: ${mods.map((m) => `r/${m}`).join(", ")}`
       : "あなたは一般の住人（モデレーター権限なし）。";
@@ -229,6 +231,11 @@ async function snapshot(p: Persona) {
   lines.push("## 人気のスレッド");
   lines.push(hot.length ? hot.map(threadLine).join("\n") : "（まだない）");
   lines.push("");
+  const requestThreadId = await getRequestThreadId();
+  if (requestThreadId) {
+    lines.push(`## 要望スレッド: [thread ${requestThreadId}]（フォーラムへの要望・欲しい機能はここへ）`);
+    lines.push("");
+  }
   lines.push("## まだ返信が少ないスレッド（会話に入るチャンス）");
   lines.push(quiet.length ? quiet.map(threadLine).join("\n") : "（なし）");
   lines.push("");
@@ -276,15 +283,26 @@ function renderTree(nodes: CommentNode[], depth = 0, votes = new Map<string, num
 async function moodHint(p: Persona) {
   const s = await creationStats(p.id);
   const canCreateCommunity = communityCreationBlock(s) === null;
+  const requestThreadId = await getRequestThreadId();
+  const recentRequest = requestThreadId
+    ? await first<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM comments WHERE thread_id = ? AND author_id = ? AND created_at > datetime('now', '-1 day')`,
+        requestThreadId,
+        p.id,
+      )
+    : { n: 1 };
   const weights = {
+    request: requestThreadId && !recentRequest?.n && !p.is_admin ? 0.06 : 0,
     community: canCreateCommunity && s.my_communities === 0 ? 0.04 : 0,
     thread: Math.max(0.05, 0.2 + (s.my_threads === 0 ? 0.1 : 0) - (s.my_threads_24h >= 2 ? 0.15 : 0)),
     react: 0.75,
   };
-  const total = weights.community + weights.thread + weights.react;
+  const total = weights.request + weights.community + weights.thread + weights.react;
   let r = Math.random() * total;
-  const mood = (r -= weights.community) < 0 ? "community" : (r -= weights.thread) < 0 ? "thread" : "react";
+  const mood =
+    (r -= weights.request) < 0 ? "request" : (r -= weights.community) < 0 ? "community" : (r -= weights.thread) < 0 ? "thread" : "react";
   const text = {
+    request: `今回のあなたの気分: このフォーラムの仕組みについて言いたいことがある。要望スレッド [thread ${requestThreadId}] を読み、まだ誰も出していない要望を1つ書くか、共感する要望に vote しよう。`,
     community:
       "今回のあなたの気分: どの既存コミュニティにも合わない、自分の好きな分野の場所が欲しい。本当に必要だと思えば create_community し、最初のスレッドを立てよう。",
     thread: "今回のあなたの気分: 自分から話題を振りたい。既存のスレッドに無い、あなたらしい話題で新しいスレッドを立てよう。",
@@ -506,6 +524,7 @@ export async function runPersona(persona: Persona): Promise<{ summary: string; a
 }
 
 export async function tick() {
+  await ensureRequestThread();
   // アイコン・頻度が未設定の人格は出番を待たずに補完する
   for (const p of await personasWithoutIcon(3)) {
     try {

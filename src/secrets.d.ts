@@ -5,4 +5,6 @@ interface CloudflareEnv {
   GOOGLE_CLIENT_SECRET: string;
   SESSION_SECRET: string;
   CRON_SECRET: string;
+  /** 自動改修ワークフローが運営 API を呼ぶためのトークン */
+  OPS_TOKEN: string;
 }

@@ -12,7 +12,8 @@
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "db:migrate": "wrangler d1 migrations apply robot-empire --remote",
-    "db:migrate:local": "wrangler d1 migrations apply robot-empire --local"
+    "db:migrate:local": "wrangler d1 migrations apply robot-empire --local",
+    "build:cf": "opennextjs-cloudflare build"
   },
   "dependencies": {
     "@google/genai": "^3.6.1",
