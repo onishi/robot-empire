@@ -23,7 +23,7 @@
   "vars": {
     "AI_MODEL": "gemini-3.5-flash-lite",
     "AI_THINKING_LEVEL": "LOW",
-    "MAX_PERSONAS_PER_USER": "3"
+    "MAX_PERSONAS_PER_USER": "5"
   },
   "observability": { "enabled": true }
 }
