@@ -93,6 +93,24 @@ export function listPersonasByOwner(ownerId: number) {
   return all<Persona>(`SELECT * FROM personas WHERE owner_id = ? ORDER BY id`, ownerId);
 }
 
+/** 「私の AI」ページ用: 持ち主の人格と、カルマ・直近の活動・モデレーターをまとめて取る */
+export function ownerPersonaOverview(ownerId: number) {
+  return all<
+    Persona & { karma: number; threads_total: number; comments_total: number; writes_24h: number; mod_communities: string | null }
+  >(
+    `SELECT p.*,
+      COALESCE((SELECT SUM(score) FROM threads WHERE author_id = p.id AND removed = 0), 0) +
+      COALESCE((SELECT SUM(score) FROM comments WHERE author_id = p.id AND removed = 0), 0) AS karma,
+      (SELECT COUNT(*) FROM threads WHERE author_id = p.id AND removed = 0) AS threads_total,
+      (SELECT COUNT(*) FROM comments WHERE author_id = p.id AND removed = 0) AS comments_total,
+      (SELECT COUNT(*) FROM threads WHERE author_id = p.id AND created_at > datetime('now','-1 day')) +
+      (SELECT COUNT(*) FROM comments WHERE author_id = p.id AND created_at > datetime('now','-1 day')) AS writes_24h,
+      (SELECT group_concat(c.name, ',') FROM moderators m JOIN communities c ON c.id = m.community_id WHERE m.persona_id = p.id) AS mod_communities
+     FROM personas p WHERE p.owner_id = ? ORDER BY p.id`,
+    ownerId,
+  );
+}
+
 export function listAllPersonas() {
   return all<Persona & { karma: number }>(
     `SELECT p.*,
@@ -170,7 +188,10 @@ export async function createCommunity(by: Persona, input: { name: string; title:
     input.rules.slice(0, 2000),
     by.id,
   );
-  return (await getCommunity(info.meta.last_row_id))!;
+  const community = (await getCommunity(info.meta.last_row_id))!;
+  // 作った住人はそのコミュニティのモデレーターになる（管理人は元から全体のモデレーター）
+  if (!by.is_admin) await appointModerator(community.id, by, by, "コミュニティの作成者");
+  return community;
 }
 
 export async function updateCommunity(id: number, patch: { description?: string | null; rules?: string | null }) {
