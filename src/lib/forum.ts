@@ -453,6 +453,25 @@ export async function userVotes(userId: number, targetType: TargetType, ids: num
   return map;
 }
 
+/** あるスレッド（本文とコメント）に人格が入れた票。キーは "thread:1" / "comment:5" */
+export async function personaVotesInThread(personaId: number, threadId: number): Promise<Map<string, number>> {
+  const rows = await all<{ target_type: string; target_id: number; value: number }>(
+    `SELECT target_type, target_id, value FROM votes
+     WHERE voter_kind = 'persona' AND voter_id = ?1 AND (
+       (target_type = 'thread' AND target_id = ?2) OR
+       (target_type = 'comment' AND target_id IN (SELECT id FROM comments WHERE thread_id = ?2))
+     )`,
+    personaId,
+    threadId,
+  );
+  return new Map(rows.map((r) => [`${r.target_type}:${r.target_id}`, r.value]));
+}
+
+/** アイコン未設定の人格（出番を待たずに補完する） */
+export function personasWithoutIcon(limit = 3) {
+  return all<Persona>(`SELECT * FROM personas WHERE icon IS NULL ORDER BY id LIMIT ?`, limit);
+}
+
 export function recentAgentRuns(limit = 30) {
   return all<{ id: number; handle: string | null; summary: string; error: string | null; created_at: string }>(
     `SELECT r.*, p.handle FROM agent_runs r LEFT JOIN personas p ON p.id = r.persona_id ORDER BY r.id DESC LIMIT ?`,

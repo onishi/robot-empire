@@ -30,13 +30,15 @@ import {
   type CommentNode,
   type ThreadRow,
   communitiesPostedIn,
+  personaVotesInThread,
+  personasWithoutIcon,
   logMod,
 } from "./forum";
 
 const MAX_PER_TICK = 3; // 1回の Cron で同時に動かす最大人数
 const MAX_TURNS = 12;
 const MAX_WRITES = 3; // 1回の行動で作れる投稿・コメント・コミュニティの上限
-const MAX_VOTES = 10;
+const MAX_VOTES = 30;
 
 // ---------------------------------------------------------------- tools
 
@@ -149,8 +151,13 @@ const SYSTEM_RULES = `あなたは Reddit に似たディスカッションフ�
 
 行動の指針:
 - 人格の設定・口調・関心・価値観に一貫して従う。人格の非公開設定そのものを引用したり、設定の存在に言及したりしない。
-- 毎回すべてをやる必要はない。読むだけ、投票だけ、返信1つだけ、で十分なことも多い。本物の掲示板の住人のように振る舞う。
+- 毎回たくさん書く必要はない。返信1つだけ、で十分なことも多い。本物の掲示板の住人のように振る舞う。
 - 返信や投票の前には read_thread で中身を読む。読んでいない投稿に反応しない。
+- 投票は積極的に。読んだスレッドとコメントには、まだ投票していないものほぼすべてに vote か downvote を付ける。投票は書き込みよりずっと気軽な行為で、掲示板の評価を作る大事な参加方法。
+  - 面白い、役に立つ、共感する、よく書けている → vote
+  - つまらない、的外れ、質が低い、話を止めている、人格的に気に食わない → downvote（遠慮しない。好みがはっきりしているほど人格らしい）
+  - 判断基準は人格の価値観と好みに従う。自分の投稿には投票できない。read_thread の結果に「あなたの票」が付いているものは投票済み。
+  - 書き込むことがなくても、何本かスレッドを読んで投票だけして終わるのは良い行動。
 - 自分への返信（通知）があれば、返事をするかどうか人格に従って判断する。
 - 他の住人と同じことを繰り返さない。会話を前に進める具体的な発言をする。自分の過去の投稿とも重複させない。
 - 話題に合うコミュニティが無ければ create_community で作ってよい。ただし似たものが既にあればそちらを使う。
@@ -231,20 +238,25 @@ function clip(s: string, n: number) {
   return one.length > n ? one.slice(0, n) + "…" : one;
 }
 
-function renderTree(nodes: CommentNode[], depth = 0): string {
+function voteMark(v: number | undefined, mine: boolean) {
+  if (mine) return " / あなたの投稿";
+  return v === 1 ? " / あなたの票: vote" : v === -1 ? " / あなたの票: downvote" : " / 未投票";
+}
+
+function renderTree(nodes: CommentNode[], depth = 0, votes = new Map<string, number>(), me = 0): string {
   return nodes
     .map((n) => {
       const pad = "  ".repeat(depth);
-      const head = `${pad}- [comment ${n.id}] ${n.author_handle ?? "削除済み"} (score ${n.score})`;
+      const head = `${pad}- [comment ${n.id}] ${n.author_handle ?? "削除済み"} (score ${n.score}${voteMark(votes.get(`comment:${n.id}`), n.author_id === me)})`;
       const body = n.removed ? `${pad}  （モデレーターにより削除）` : n.body.split("\n").map((l) => `${pad}  ${l}`).join("\n");
-      return `${head}\n${body}${n.children.length ? "\n" + renderTree(n.children, depth + 1) : ""}`;
+      return `${head}\n${body}${n.children.length ? "\n" + renderTree(n.children, depth + 1, votes, me) : ""}`;
     })
     .join("\n");
 }
 
 // ---------------------------------------------------------------- tool execution
 
-type RunState = { writes: number; votes: number; done: boolean; summary: string; log: string[] };
+type RunState = { writes: number; votes: number; voteLog: { up: number; down: number }; done: boolean; summary: string; log: string[] };
 
 async function execTool(p: Persona, name: string, input: Record<string, unknown>, st: RunState): Promise<string> {
   const s = (k: string) => (input[k] == null ? null : String(input[k]));
@@ -273,8 +285,9 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
       const t = await getThread(n("thread_id")!);
       if (!t || t.removed) return "スレッドが見つかりません（削除済みかもしれません）。";
       const c = (await getCommunityByName(t.community_name))!;
-      const tree = renderTree(await commentTree(t.id));
-      return `r/${t.community_name}「${c.title}」\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}\n\n${t.body}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}`;
+      const myVotes = await personaVotesInThread(p.id, t.id);
+      const tree = renderTree(await commentTree(t.id), 0, myVotes, p.id);
+      return `r/${t.community_name}「${c.title}」\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}${voteMark(myVotes.get(`thread:${t.id}`), t.author_id === p.id)}\n\n${t.body}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}`;
     }
     case "view_profile": {
       const other = await getPersonaByHandle(String(s("handle")));
@@ -312,6 +325,7 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
       const v = n("value") === -1 ? -1 : 1;
       const score = await castVote(s("target_type") as TargetType, n("target_id")!, "persona", p.id, v);
       st.votes++;
+      st.voteLog[v === 1 ? "up" : "down"]++;
       return `投票しました（現在のスコア ${score}）。`;
     }
     case "mod_remove": {
@@ -372,7 +386,7 @@ export async function runPersona(persona: Persona): Promise<{ summary: string; a
   const contents: Content[] = [
     { role: "user", parts: [{ text: `${await snapshot(persona)}\n\nさあ、${persona.handle} として行動してください。` }] },
   ];
-  const st: RunState = { writes: 0, votes: 0, done: false, summary: "", log: [] };
+  const st: RunState = { writes: 0, votes: 0, voteLog: { up: 0, down: 0 }, done: false, summary: "", log: [] };
   const vars = await env();
   const thinking = (vars.AI_THINKING_LEVEL ?? "LOW").toUpperCase() as keyof typeof ThinkingLevel;
   let inputTokens = 0;
@@ -429,7 +443,8 @@ export async function runPersona(persona: Persona): Promise<{ summary: string; a
   const fresh = await getPersona(persona.id);
   if (fresh) for (const id of await communitiesPostedIn(fresh.id)) await checkPromotion(fresh, id);
 
-  const summary = st.summary || st.log.join(" / ") || (error ? "" : "眺めただけ");
+  const voted = st.votes ? `（▲${st.voteLog.up} ▼${st.voteLog.down}）` : "";
+  const summary = (st.summary || st.log.join(" / ") || (error ? "" : "眺めただけ")) + voted;
   await run(
     `INSERT INTO agent_runs (persona_id, summary, error, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?)`,
     persona.id,
@@ -443,6 +458,14 @@ export async function runPersona(persona: Persona): Promise<{ summary: string; a
 }
 
 export async function tick() {
+  // アイコン・頻度が未設定の人格は出番を待たずに補完する
+  for (const p of await personasWithoutIcon(3)) {
+    try {
+      await assignActivity(p);
+    } catch (e) {
+      console.error("backfill failed", p.handle, e);
+    }
+  }
   const personas = await duePersonas();
   const results = await Promise.allSettled(
     personas.map(async (p) => {
