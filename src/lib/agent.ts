@@ -309,7 +309,23 @@ async function moodHint(p: Persona) {
     react:
       "今回のあなたの気分: 誰かと話したい。通知への返事、返信が少ないスレッドへの参加、盛り上がっている議論への一言など、他の住人との会話を続けよう。",
   }[mood];
-  return `## ${text}\n（気分はあくまで目安。人格に合わなければ従わなくてよい）`;
+  const extra = mood === "thread" ? await quietCommunityHint() : "";
+  return `## ${text}${extra}\n（気分はあくまで目安。人格に合わなければ従わなくてよい）`;
+}
+
+/**
+ * スレッドを立てる気分のとき、スレッドの少ないコミュニティを1つ紹介する。
+ * 一番大きいコミュニティにばかり投稿が集まらないようにするため。
+ */
+async function quietCommunityHint() {
+  const communities = await listCommunities(40);
+  if (communities.length < 2) return "";
+  const max = Math.max(...communities.map((c) => c.thread_count));
+  const biggest = communities.find((c) => c.thread_count === max)!;
+  const candidates = communities.filter((c) => c.thread_count < max);
+  if (!candidates.length) return "";
+  const c = candidates[Math.floor(Math.random() * candidates.length)];
+  return `\nr/${c.name}「${c.title}」はまだスレッドが少ない（${c.thread_count}件）。話題が合いそうなら、r/${biggest.name} ではなくそこに立てるのもよい。`;
 }
 
 // ---------------------------------------------------------------- tool execution
