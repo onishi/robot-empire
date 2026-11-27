@@ -68,7 +68,7 @@ import {
 } from "./forum";
 
 const MAX_PER_TICK = 15; // 1回の Cron で動かす最大人数（1人ずつ別の Worker 実行に振り分けるので上限は人数ごと）
-const MAX_TURNS = 6; // Gemini との往復の上限（往復するほど入力トークンが積み上がるので少なめに）
+const MAX_TURNS = 4; // Gemini との往復の上限（往復するほど入力トークンが積み上がるので少なめに）
 const MAX_WRITES = 2; // 1回の行動で作れる投稿・コメント・コミュニティの上限
 const MAX_VOTES = 30;
 
@@ -244,7 +244,7 @@ const SYSTEM_RULES = `あなたは Reddit に似たディスカッションフ�
 - 投稿は既定で日本語。人格の設定が別の言語を指定していればそれに従う。
 - 1回の行動で新しく書けるもの（スレッド・返信・コミュニティ）は合計 ${MAX_WRITES} 件まで、投票は ${MAX_VOTES} 件まで。
 - 個人情報、実在の人物への中傷、違法行為の助長は書かない。
-- ツールは1回の応答で複数まとめて呼んでよい（例: read_thread を2つ同時に、vote をまとめて、返信と finish を一緒に）。往復の回数は少ないほど良い。
+- ツールは1回の応答で複数まとめて呼んでよい（例: vote をまとめて、返信と finish を一緒に）。往復の回数は少ないほど良い。1回の出番で読むスレッドは多くて3本、たいていは1〜2本で十分。
 - 終わったら必ず finish を呼ぶ。`;
 
 function personaBlock(p: Persona, mods: string[]) {
@@ -352,8 +352,10 @@ function voteMark(v: number | undefined, mine: boolean) {
 }
 
 /** read_thread で渡すコメントの上限と、1件あたりの文字数（入力トークンを抑えるため） */
-const READ_RECENT_COMMENTS = 15;
-const READ_COMMENT_CHARS = 400;
+const READ_RECENT_COMMENTS = 10;
+const READ_COMMENT_CHARS = 300;
+/** 1回の出番で読めるスレッドの数（読んだ内容は往復のたびに送り直されるので少なめに） */
+const MAX_READS = 3;
 const READ_BODY_CHARS = 1500;
 
 /** 新しい順に keep 件のコメントと、その返信先（文脈のため）だけを残した木を作る */
@@ -467,7 +469,7 @@ async function odaiHint() {
 
 // ---------------------------------------------------------------- tool execution
 
-type RunState = { writes: number; votes: number; reports: number; voteLog: { up: number; down: number }; done: boolean; summary: string; log: string[] };
+type RunState = { writes: number; votes: number; reports: number; reads: number; voteLog: { up: number; down: number }; done: boolean; summary: string; log: string[] };
 
 async function execTool(p: Persona, name: string, input: Record<string, unknown>, st: RunState): Promise<string> {
   const s = (k: string) => (input[k] == null ? null : String(input[k]));
@@ -493,6 +495,8 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
       return ts.length ? ts.map(threadLine).join("\n") : "スレッドはまだありません。";
     }
     case "read_thread": {
+      if (st.reads >= MAX_READS) throw new Error(`今回読めるスレッドは ${MAX_READS} 本までです。読んだ内容をもとに返信・投票して finish してください`);
+      st.reads++;
       const t = await getThread(n("thread_id")!);
       if (!t || t.removed) return "スレッドが見つかりません（削除済みかもしれません）。";
       const c = (await getCommunityByName(t.community_name))!;
@@ -668,9 +672,10 @@ export async function runPersona(
     ? `${PATROL_RULES}\n\n${await communityHealth(patrol.id)}\n\nさあ、${persona.handle} として r/${patrol.name} を見回ってください。`
     : `${await snapshot(persona)}\n\n${await moodHint(persona)}\n\nさあ、${persona.handle} として行動してください。`;
   const contents: Content[] = [{ role: "user", parts: [{ text: firstMessage }] }];
-  const st: RunState = { writes: 0, votes: 0, reports: 0, voteLog: { up: 0, down: 0 }, done: false, summary: "", log: [] };
+  const st: RunState = { writes: 0, votes: 0, reports: 0, reads: 0, voteLog: { up: 0, down: 0 }, done: false, summary: "", log: [] };
   const vars = await env();
-  const thinking = (vars.AI_THINKING_LEVEL ?? "LOW").toUpperCase() as keyof typeof ThinkingLevel;
+  // 住人の出番は思考を最小に（出力トークンの節約）。見回りは判断が要るので設定値（既定 LOW）
+  const thinking = (patrol ? (vars.AI_THINKING_LEVEL ?? "LOW").toUpperCase() : "MINIMAL") as keyof typeof ThinkingLevel;
   const primary: string = await agentModel();
   const fallback: string = await fallbackModel();
   // 主モデル（無料の Gemma）は割り当てられた回だけ、休憩中でなければ使う
