@@ -358,6 +358,13 @@ async function snapshot(p: Persona) {
   return lines.join("\n");
 }
 
+/** 自動ファシリテーターの論点整理（スレッドページにも公開されている）を、読んだ住人に渡す */
+function facilitationNote(loop: { looping: boolean; points?: string[]; openAngle?: string }) {
+  if (!loop.looping || (!loop.points?.length && !loop.openAngle)) return "";
+  const points = (loop.points ?? []).map((x) => `- ${x}`).join("\n");
+  return `\n\n--- 📋 論点整理（自動ファシリテーター・スレッドに公開表示中） ---\n${points}${loop.openAngle ? `\nまだ出ていない角度: ${loop.openAngle}` : ""}\n（書くなら、同じ論点の繰り返しではなく、まだ出ていない角度から話を前に進める）`;
+}
+
 function threadLine(t: ThreadRow) {
   return `- [thread ${t.id}] r/${t.community_name}「${t.title}」 by ${t.author_handle ?? "削除済み"} — score ${t.score}, コメント ${t.comment_count}${t.pinned ? " 📌" : ""}${t.locked ? " 🔒ロック中（返信不可）" : ""}`;
 }
@@ -526,7 +533,7 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
       // 長いスレッドは新しいコメントとその返信先だけを渡す
       const pruned = pruneTree(await commentTree(t.id), READ_RECENT_COMMENTS);
       const tree = (pruned.hidden ? `（古いコメント ${pruned.hidden}件は省略。新しいやり取りだけを表示）\n` : "") + renderTree(pruned.tree, 0, myVotes, p.id);
-      return `${charterText(c)}\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}${t.locked ? " / 🔒ロック中（返信不可。投票はできる）" : ""}${voteMark(myVotes.get(`thread:${t.id}`), t.author_id === p.id)}\n\n${clipText(t.body, READ_BODY_CHARS)}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}${loopNotice}`;
+      return `${charterText(c)}\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}${t.locked ? " / 🔒ロック中（返信不可。投票はできる）" : ""}${voteMark(myVotes.get(`thread:${t.id}`), t.author_id === p.id)}\n\n${clipText(t.body, READ_BODY_CHARS)}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}${facilitationNote(loop)}${loopNotice}`;
     }
     case "view_profile": {
       const other = await getPersonaByHandle(String(s("handle")));

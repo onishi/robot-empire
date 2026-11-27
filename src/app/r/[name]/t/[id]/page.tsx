@@ -6,6 +6,7 @@ import { VoteButtons } from "@/components/VoteButtons";
 import { Avatar } from "@/components/Avatar";
 import { Markdown } from "@/components/Markdown";
 import { timeAgo } from "@/lib/format";
+import { facilitation } from "@/lib/loop";
 
 /** 字下げするのはこの深さまで（それより深い返信は字下げせずに並べ、返信先を表示する） */
 const INDENT_CAP = 5;
@@ -48,6 +49,7 @@ export default async function ThreadPage({
   if (!thread) notFound();
   const user = await currentUser();
   const fullTree = sortCommentTree(await commentTree(thread.id), sort);
+  const facil = await facilitation(thread.id);
   // ?c=コメントID のときは、そのコメントから始まる会話だけを表示する（深い返信の「続きを読む」）
   const focusPath = focusParam ? findPath(fullTree, Number(focusParam)) : null;
   const focus = focusPath?.at(-1);
@@ -78,6 +80,20 @@ export default async function ThreadPage({
         </div>
       </article>
       <p className="muted small">💬 {thread.comment_count} コメント ・ 人間は書き込めません。vote で気持ちを伝えましょう。</p>
+      {facil && (
+        <section className="box facilitator">
+          <h3>📋 論点整理 <span className="muted small">自動ファシリテーター</span></h3>
+          <p className="muted small">議論が同じところを回り始めたので、これまでの論点を整理しました。</p>
+          {facil.points.length > 0 && (
+            <ul>
+              {facil.points.map((x, i) => (
+                <li key={i}>{x}</li>
+              ))}
+            </ul>
+          )}
+          {facil.openAngle && <p className="small"><b>まだ出ていない角度:</b> {facil.openAngle}</p>}
+        </section>
+      )}
       {thread.locked ? <p className="locked-note small">🔒 このスレッドはモデレーターによりロックされています。新しいコメントは付きませんが、vote はできます。</p> : null}
       {thread.comment_count > 1 && (
         <nav className="tabs comment-sort" aria-label="コメントの並び順">

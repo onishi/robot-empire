@@ -15,7 +15,7 @@ const SIMILARITY_THRESHOLD = 0.28; // 文字3-gram の Jaccard 平均がこれ�
 const SEMANTIC_MIN_COMMENTS = 10; // これ以上のスレッドは AI に意味的なループを判定させる
 const RECHECK_EVERY = 4; // コメントがこれだけ増えたら判定し直す
 
-export type LoopVerdict = { looping: boolean; reason: string };
+export type LoopVerdict = { looping: boolean; reason: string; points?: string[]; openAngle?: string };
 
 export const SPICE_IDEAS =
   "新しい視点や反論を出す／具体的なエピソードや例え話を出す／意外なものと比較する／お題・クイズ・投票・ゲームを提案する／まだ発言していない住人の名前を出して話を振る／思い切って脱線し、派生した話題で新しいスレッドを立てる";
@@ -61,7 +61,10 @@ export function judgeLoop(comments: { author_id: number | null; body: string }[]
 const JUDGE_PROMPT = `掲示板のスレッドの直近のやり取りを読み、議論が「ループ」しているか判定してください。
 ループとは: 同じ主張・同じ冗談・同じ展開を言い方を変えて繰り返している、話が前に進まず堂々巡りしている、新しい情報や視点が何往復も出ていない状態。
 キャラクターの口癖や、盛り上がって話題が展開しているだけの場合はループではありません。
-looping が true なら、reason に「何が繰り返されているか」を短く書いてください（30字程度）。`;
+looping が true なら、reason に「何が繰り返されているか」を短く書いてください（30字程度）。
+looping が true なら、交通整理のために次も書いてください（false なら空にする）。
+- points: これまでに出た主な論点・立場（最大3つ、各40字以内、発言者名は入れず中立に）
+- open_angle: まだ誰も触れていない、話を前に進められそうな角度や問い（1つ、60字以内）`;
 
 async function semanticLoop(title: string, comments: { body: string; handle: string | null }[]): Promise<LoopVerdict> {
   try {
@@ -73,15 +76,27 @@ async function semanticLoop(title: string, comments: { body: string; handle: str
         responseMimeType: "application/json",
         responseJsonSchema: {
           type: "object",
-          properties: { looping: { type: "boolean" }, reason: { type: "string" } },
+          properties: {
+            looping: { type: "boolean" },
+            reason: { type: "string" },
+            points: { type: "array", items: { type: "string" } },
+            open_angle: { type: "string" },
+          },
           required: ["looping", "reason"],
         },
         ...thinkingConfigFor(await judgeModel(), "LOW"),
         maxOutputTokens: 1024,
       },
     });
-    const data = JSON.parse(res.text ?? "{}") as { looping?: boolean; reason?: string };
-    return { looping: !!data.looping, reason: data.looping ? `話が堂々巡りしている: ${String(data.reason ?? "").slice(0, 80)}` : "" };
+    const data = JSON.parse(res.text ?? "{}") as { looping?: boolean; reason?: string; points?: unknown; open_angle?: unknown };
+    if (!data.looping) return { looping: false, reason: "" };
+    const points = (Array.isArray(data.points) ? data.points : []).map((x) => String(x).trim().slice(0, 60)).filter(Boolean).slice(0, 3);
+    return {
+      looping: true,
+      reason: `話が堂々巡りしている: ${String(data.reason ?? "").slice(0, 80)}`,
+      points,
+      openAngle: String(data.open_angle ?? "").trim().slice(0, 100),
+    };
   } catch (e) {
     console.error("semanticLoop failed", e);
     return { looping: false, reason: "" };
@@ -110,24 +125,45 @@ export async function threadLoop(threadId: number): Promise<LoopVerdict> {
   const quick = judgeLoop(rows);
   if (quick.looping || thread.comment_count < SEMANTIC_MIN_COMMENTS) return quick;
 
-  const cached = await first<{ comment_count: number; looping: number; reason: string }>(
-    `SELECT comment_count, looping, reason FROM thread_loop_checks WHERE thread_id = ?`,
+  const cached = await first<{ comment_count: number; looping: number; reason: string; points: string; open_angle: string }>(
+    `SELECT comment_count, looping, reason, points, open_angle FROM thread_loop_checks WHERE thread_id = ?`,
     threadId,
   );
   if (cached && thread.comment_count - cached.comment_count < RECHECK_EVERY) {
-    return { looping: !!cached.looping, reason: cached.reason };
+    return { looping: !!cached.looping, reason: cached.reason, points: splitPoints(cached.points), openAngle: cached.open_angle };
   }
   const verdict = await semanticLoop(thread.title, rows);
   await run(
-    `INSERT INTO thread_loop_checks (thread_id, comment_count, looping, reason) VALUES (?, ?, ?, ?)
+    `INSERT INTO thread_loop_checks (thread_id, comment_count, looping, reason, points, open_angle) VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT (thread_id) DO UPDATE SET comment_count = excluded.comment_count, looping = excluded.looping,
-       reason = excluded.reason, checked_at = datetime('now')`,
+       reason = excluded.reason, points = excluded.points, open_angle = excluded.open_angle, checked_at = datetime('now')`,
     threadId,
     thread.comment_count,
     verdict.looping ? 1 : 0,
     verdict.reason,
+    (verdict.points ?? []).join("\n"),
+    verdict.openAngle ?? "",
   );
   return verdict;
+}
+
+function splitPoints(s: string) {
+  return s ? s.split("\n").filter(Boolean) : [];
+}
+
+/**
+ * 自動ファシリテーターの論点整理（スレッドページに表示する）。
+ * AI のループ判定で「堂々巡り」と判定され、論点が保存されているスレッドだけ返す。新たな AI 呼び出しはしない。
+ */
+export async function facilitation(threadId: number): Promise<{ points: string[]; openAngle: string } | null> {
+  const row = await first<{ looping: number; points: string; open_angle: string }>(
+    `SELECT looping, points, open_angle FROM thread_loop_checks WHERE thread_id = ?`,
+    threadId,
+  );
+  if (!row?.looping) return null;
+  const points = splitPoints(row.points);
+  if (!points.length && !row.open_angle) return null;
+  return { points, openAngle: row.open_angle };
 }
 
 /** 盛り上がっているスレッドのうち、ループ気味のもの（AI 判定はキャッシュ済みの結果だけ使う） */
