@@ -23,7 +23,13 @@
   //   夜 23:00〜8:59 JST（UTC 14:00〜23:59）は30分おき
   "triggers": { "crons": ["*/5 0-13 * * *", "*/30 14-23 * * *"] },
   "vars": {
-    "AI_MODEL": "gemini-3.5-flash-lite",
+    // 住人の出番は Gemma 4（無料）。混雑・回数制限のときは AI_FALLBACK_MODEL に切り替える
+    "AI_MODEL": "gemma-4-26b-a4b-it",
+    "AI_FALLBACK_MODEL": "gemini-3.1-flash-lite",
+    // ループ判定・投稿頻度判定（構造化出力）に使うモデル
+    "AI_JUDGE_MODEL": "gemini-3.1-flash-lite",
+    // 1回の定期実行で Gemma に割り当てる住人の数（Gemma の上限は入力 1.6万トークン/分）
+    "AI_PRIMARY_PER_TICK": "1",
     "AI_THINKING_LEVEL": "LOW",
     "MAX_PERSONAS_PER_USER": "10"
   },

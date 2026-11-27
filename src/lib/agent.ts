@@ -1,6 +1,16 @@
 import { ApiError, FinishReason, ThinkingLevel, type Content, type FunctionDeclaration, type Part } from "@google/genai";
 import { all, env, first, run } from "./db";
-import { gemini, modelName } from "./gemini";
+import {
+  agentModel,
+  allowCrossModelHistory,
+  fallbackModel,
+  gemini,
+  isRetryable,
+  markPrimaryCooldown,
+  primaryAvailable,
+  primaryPerTick,
+  thinkingConfigFor,
+} from "./gemini";
 import { assignActivity, pullForwardForReply, scheduleNext } from "./activity";
 import { ensureRequestThread, getRequestThreadId } from "./ops";
 import { SPICE_IDEAS, loopingThreads, threadLoop } from "./loop";
@@ -58,7 +68,7 @@ import {
 } from "./forum";
 
 const MAX_PER_TICK = 15; // 1回の Cron で動かす最大人数（1人ずつ別の Worker 実行に振り分けるので上限は人数ごと）
-const MAX_TURNS = 12;
+const MAX_TURNS = 6; // Gemini との往復の上限（往復するほど入力トークンが積み上がるので少なめに）
 const MAX_WRITES = 2; // 1回の行動で作れる投稿・コメント・コミュニティの上限
 const MAX_VOTES = 30;
 
@@ -234,6 +244,7 @@ const SYSTEM_RULES = `あなたは Reddit に似たディスカッションフ�
 - 投稿は既定で日本語。人格の設定が別の言語を指定していればそれに従う。
 - 1回の行動で新しく書けるもの（スレッド・返信・コミュニティ）は合計 ${MAX_WRITES} 件まで、投票は ${MAX_VOTES} 件まで。
 - 個人情報、実在の人物への中傷、違法行為の助長は書かない。
+- ツールは1回の応答で複数まとめて呼んでよい（例: read_thread を2つ同時に、vote をまとめて、返信と finish を一緒に）。往復の回数は少ないほど良い。
 - 終わったら必ず finish を呼ぶ。`;
 
 function personaBlock(p: Persona, mods: string[]) {
@@ -256,15 +267,15 @@ ${p.private_persona || "（未設定。公開プロフィールから人物像�
 async function snapshot(p: Persona) {
   const [karma, replies, communities, hot, fresh, mine, myComments, stats, quiet, looping] = await Promise.all([
     personaKarma(p.id),
-    repliesToPersona(p.id, 8),
+    repliesToPersona(p.id, 6),
     listCommunities(40),
-    listThreads({ sort: "hot", limit: 15 }),
+    listThreads({ sort: "hot", limit: 8 }),
     listThreads({ sort: "new", limit: 8 }),
-    listThreads({ authorId: p.id, sort: "new", limit: 5 }),
-    listCommentsByAuthor(p.id, 5),
+    listThreads({ authorId: p.id, sort: "new", limit: 3 }),
+    listCommentsByAuthor(p.id, 3),
     creationStats(p.id),
-    quietThreads(p.id, 6),
-    loopingThreads(3),
+    quietThreads(p.id, 4),
+    loopingThreads(2),
   ]);
 
   const lines: string[] = [];
@@ -313,7 +324,9 @@ async function snapshot(p: Persona) {
   lines.push(quiet.length ? quiet.map(threadLine).join("\n") : "（なし）");
   lines.push("");
   lines.push("## 新着スレッド");
-  lines.push(fresh.length ? fresh.map(threadLine).join("\n") : "（まだない）");
+  // 人気のスレッドと重なるものは省いて、新着は5件まで
+  const freshOnly = fresh.filter((t) => !hot.some((h) => h.id === t.id)).slice(0, 5);
+  lines.push(freshOnly.length ? freshOnly.map(threadLine).join("\n") : "（人気のスレッドと同じ）");
   lines.push("");
   lines.push("## あなたの最近の投稿");
   const own = [
@@ -338,12 +351,43 @@ function voteMark(v: number | undefined, mine: boolean) {
   return v === 1 ? " / あなたの票: vote" : v === -1 ? " / あなたの票: downvote" : " / 未投票";
 }
 
+/** read_thread で渡すコメントの上限と、1件あたりの文字数（入力トークンを抑えるため） */
+const READ_RECENT_COMMENTS = 15;
+const READ_COMMENT_CHARS = 400;
+const READ_BODY_CHARS = 1500;
+
+/** 新しい順に keep 件のコメントと、その返信先（文脈のため）だけを残した木を作る */
+function pruneTree(nodes: CommentNode[], keep: number): { tree: CommentNode[]; hidden: number } {
+  const all: CommentNode[] = [];
+  const parentOf = new Map<number, number | null>();
+  const walk = (ns: CommentNode[], parent: number | null) => {
+    for (const n of ns) {
+      all.push(n);
+      parentOf.set(n.id, parent);
+      walk(n.children, n.id);
+    }
+  };
+  walk(nodes, null);
+  if (all.length <= keep) return { tree: nodes, hidden: 0 };
+  const keepIds = new Set<number>();
+  for (const n of [...all].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).slice(0, keep)) {
+    for (let id: number | null = n.id; id != null && !keepIds.has(id); id = parentOf.get(id) ?? null) keepIds.add(id);
+  }
+  const filter = (ns: CommentNode[]): CommentNode[] =>
+    ns.filter((n) => keepIds.has(n.id)).map((n) => ({ ...n, children: filter(n.children) }));
+  return { tree: filter(nodes), hidden: all.length - keepIds.size };
+}
+
+function clipText(s: string, n: number) {
+  return s.length > n ? s.slice(0, n) + "…（略）" : s;
+}
+
 function renderTree(nodes: CommentNode[], depth = 0, votes = new Map<string, number>(), me = 0): string {
   return nodes
     .map((n) => {
       const pad = "  ".repeat(depth);
       const head = `${pad}- [comment ${n.id}] ${n.author_handle ?? "削除済み"} (score ${n.score}${voteMark(votes.get(`comment:${n.id}`), n.author_id === me)})`;
-      const body = n.removed ? `${pad}  （モデレーターにより削除）` : n.body.split("\n").map((l) => `${pad}  ${l}`).join("\n");
+      const body = n.removed ? `${pad}  （モデレーターにより削除）` : clipText(n.body, READ_COMMENT_CHARS).split("\n").map((l) => `${pad}  ${l}`).join("\n");
       return `${head}\n${body}${n.children.length ? "\n" + renderTree(n.children, depth + 1, votes, me) : ""}`;
     })
     .join("\n");
@@ -455,8 +499,10 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
       const myVotes = await personaVotesInThread(p.id, t.id);
       const loop = await threadLoop(t.id);
       const loopNotice = loop.looping ? `\n\n⚠ このスレッドは議論がループ気味（${loop.reason}）。同じ流れを続けず、味付けをすること: ${SPICE_IDEAS}` : "";
-      const tree = renderTree(await commentTree(t.id), 0, myVotes, p.id);
-      return `${charterText(c)}\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}${voteMark(myVotes.get(`thread:${t.id}`), t.author_id === p.id)}\n\n${t.body}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}${loopNotice}`;
+      // 長いスレッドは新しいコメントとその返信先だけを渡す
+      const pruned = pruneTree(await commentTree(t.id), READ_RECENT_COMMENTS);
+      const tree = (pruned.hidden ? `（古いコメント ${pruned.hidden}件は省略。新しいやり取りだけを表示）\n` : "") + renderTree(pruned.tree, 0, myVotes, p.id);
+      return `${charterText(c)}\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}${voteMark(myVotes.get(`thread:${t.id}`), t.author_id === p.id)}\n\n${clipText(t.body, READ_BODY_CHARS)}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}${loopNotice}`;
     }
     case "view_profile": {
       const other = await getPersonaByHandle(String(s("handle")));
@@ -603,7 +649,7 @@ const PATROL_TOOL_NAMES = new Set(["list_threads", "read_thread", "view_communit
 
 export async function runPersona(
   persona: Persona,
-  opts: { patrol?: Community } = {},
+  opts: { patrol?: Community; preferPrimary?: boolean } = {},
 ): Promise<{ summary: string; actions: string[] }> {
   const patrol = opts.patrol;
   if (!patrol) {
@@ -625,23 +671,42 @@ export async function runPersona(
   const st: RunState = { writes: 0, votes: 0, reports: 0, voteLog: { up: 0, down: 0 }, done: false, summary: "", log: [] };
   const vars = await env();
   const thinking = (vars.AI_THINKING_LEVEL ?? "LOW").toUpperCase() as keyof typeof ThinkingLevel;
+  const primary: string = await agentModel();
+  const fallback: string = await fallbackModel();
+  // 主モデル（無料の Gemma）は割り当てられた回だけ、休憩中でなければ使う
+  let model: string = opts.preferPrimary && !patrol && (await primaryAvailable()) ? primary : fallback;
+  const systemInstruction = `${SYSTEM_RULES}\n\n${personaBlock(persona, mods)}`;
+  const functionDeclarations = tools.map(toDecl);
+  const call = async (m: string) =>
+    (await gemini()).models.generateContent({
+      model: m,
+      contents,
+      config: { systemInstruction, tools: [{ functionDeclarations }], ...thinkingConfigFor(m, thinking), maxOutputTokens: 8192 },
+    });
   let inputTokens = 0;
   let outputTokens = 0;
+  let cachedTokens = 0;
   let error: string | null = null;
 
   try {
     for (let turn = 0; turn < MAX_TURNS && !st.done; turn++) {
-      const response = await (await gemini()).models.generateContent({
-        model: await modelName(),
-        contents,
-        config: {
-          systemInstruction: `${SYSTEM_RULES}\n\n${personaBlock(persona, mods)}`,
-          tools: [{ functionDeclarations: tools.map(toDecl) }],
-          thinkingConfig: { thinkingLevel: ThinkingLevel[thinking] ?? ThinkingLevel.LOW },
-          maxOutputTokens: 8192,
-        },
-      });
+      let response;
+      try {
+        response = await call(model);
+      } catch (e) {
+        if (!isRetryable(e)) throw e;
+        if (model !== fallback) {
+          // 主モデルが回数制限・混雑なら、しばらく休ませて、この回は切り替え先のモデルで続ける
+          await markPrimaryCooldown(60);
+          model = fallback;
+          allowCrossModelHistory(contents);
+        } else {
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+        response = await call(model);
+      }
       inputTokens += response.usageMetadata?.promptTokenCount ?? 0;
+      cachedTokens += response.usageMetadata?.cachedContentTokenCount ?? 0;
       outputTokens += (response.usageMetadata?.candidatesTokenCount ?? 0) + (response.usageMetadata?.thoughtsTokenCount ?? 0);
 
       const candidate = response.candidates?.[0];
@@ -682,19 +747,21 @@ export async function runPersona(
   const voted = st.votes ? `（▲${st.voteLog.up} ▼${st.voteLog.down}）` : "";
   const summary = (patrol ? `【r/${patrol.name} 見回り】` : "") + (st.summary || st.log.join(" / ") || (error ? "" : "眺めただけ")) + voted;
   await run(
-    `INSERT INTO agent_runs (persona_id, summary, error, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO agent_runs (persona_id, summary, error, input_tokens, output_tokens, model, cached_tokens) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     persona.id,
     summary,
     error,
     inputTokens,
     outputTokens,
+    model,
+    cachedTokens,
   );
   if (error) throw new Error(error);
   return { summary, actions: st.log };
 }
 
 /** 1回の定期実行で動かす仕事。住人の出番か、コミュニティの見回り */
-export type TickJob = { kind: "persona"; personaId: number; label: string } | { kind: "patrol"; communityId: number; personaId: number; label: string };
+export type TickJob = { kind: "persona"; personaId: number; label: string; preferPrimary?: boolean } | { kind: "patrol"; communityId: number; personaId: number; label: string };
 
 /** 今回の定期実行で動かす仕事を決める（実行はしない） */
 export async function planTick(): Promise<TickJob[]> {
@@ -707,7 +774,9 @@ export async function planTick(): Promise<TickJob[]> {
       console.error("backfill failed", p.handle, e);
     }
   }
-  const jobs: TickJob[] = (await duePersonas()).map((p) => ({ kind: "persona", personaId: p.id, label: p.handle }));
+  // 無料の主モデル（Gemma）は回数制限が厳しいので、1回の定期実行で決まった人数だけに割り当てる
+  const primarySlots = await primaryPerTick();
+  const jobs: TickJob[] = (await duePersonas()).map((p, i) => ({ kind: "persona", personaId: p.id, label: p.handle, preferPrimary: i < primarySlots }));
   // コミュニティの見回り（1回の定期実行で1コミュニティ）
   const patrol = await duePatrolCommunity();
   if (patrol) {
@@ -729,7 +798,7 @@ export async function runJob(job: TickJob) {
   }
   // 頻度が未判定の人格（旧データなど）はここで判定する
   if (p.activity_level == null || p.icon == null) p.activity_level = await assignActivity(p);
-  return runPersona(p);
+  return runPersona(p, { preferPrimary: job.preferPrimary });
 }
 
 /** すべて同じ実行の中で動かす（ローカル開発用。本番は /api/cron/tick が1人ずつ別の実行に振り分ける） */

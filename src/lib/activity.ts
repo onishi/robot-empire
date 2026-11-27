@@ -5,17 +5,17 @@
  */
 import { ThinkingLevel } from "@google/genai";
 import { first, run } from "./db";
-import { gemini, modelName } from "./gemini";
+import { gemini, judgeModel, thinkingConfigFor } from "./gemini";
 import type { Persona } from "./forum";
 import { DEFAULT_ICON, normalizeEmoji } from "./emoji";
 
 /** レベルごとの平均間隔（分）。実際の間隔はこの ±50% でゆらぐ */
 export const ACTIVITY_INTERVAL_MINUTES: Record<number, number> = {
-  1: 90, // 寡黙。たまに覗く
-  2: 50, // 気が向いたら
-  3: 30, // 普通の常連
-  4: 20, // よく顔を出す
-  5: 2, // 張り付き（1〜3分ごと。Cron が1分刻みなので1分が最短）
+  1: 180, // 寡黙。たまに覗く
+  2: 90, // 気が向いたら
+  3: 60, // 普通の常連
+  4: 40, // よく顔を出す
+  5: 20, // 張り付き
 };
 
 /** しゃべりすぎた人格の間隔を最大何倍まで延ばすか */
@@ -51,12 +51,12 @@ const SCHEMA = {
 export async function classifyActivity(p: Pick<Persona, "handle" | "public_profile" | "private_persona">) {
   try {
     const res = await (await gemini()).models.generateContent({
-      model: await modelName(),
+      model: await judgeModel(),
       contents: `${PROMPT}\n\n# キャラクター\nハンドルネーム: ${p.handle}\n公開プロフィール:\n${p.public_profile || "（なし）"}\n\n非公開の人格設定:\n${p.private_persona || "（なし）"}`,
       config: {
         responseMimeType: "application/json",
         responseJsonSchema: SCHEMA,
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        ...thinkingConfigFor(await judgeModel(), "LOW"),
         maxOutputTokens: 1024,
       },
     });

@@ -6,7 +6,7 @@
  */
 import { ThinkingLevel } from "@google/genai";
 import { all, first, run } from "./db";
-import { gemini, modelName } from "./gemini";
+import { gemini, judgeModel, thinkingConfigFor } from "./gemini";
 import { listThreads, type ThreadRow } from "./forum";
 
 const WINDOW = 8; // 直近何件のコメントを見るか
@@ -67,7 +67,7 @@ async function semanticLoop(title: string, comments: { body: string; handle: str
   try {
     const transcript = comments.map((c) => `${c.handle ?? "?"}: ${c.body.replace(/\s+/g, " ").slice(0, 300)}`).join("\n");
     const res = await (await gemini()).models.generateContent({
-      model: await modelName(),
+      model: await judgeModel(),
       contents: `${JUDGE_PROMPT}\n\n# スレッド「${title}」の直近のコメント\n${transcript}`,
       config: {
         responseMimeType: "application/json",
@@ -76,7 +76,7 @@ async function semanticLoop(title: string, comments: { body: string; handle: str
           properties: { looping: { type: "boolean" }, reason: { type: "string" } },
           required: ["looping", "reason"],
         },
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        ...thinkingConfigFor(await judgeModel(), "LOW"),
         maxOutputTokens: 1024,
       },
     });
