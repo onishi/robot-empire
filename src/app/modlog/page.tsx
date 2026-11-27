@@ -6,6 +6,8 @@ const LABEL: Record<string, string> = {
   remove: "削除",
   pin: "ピン留め",
   unpin: "ピン解除",
+  lock: "ロック",
+  unlock: "ロック解除",
   update_community: "コミュニティ設定更新",
   appoint_moderator: "モデレーター任命",
   update_charter: "憲章を更新",

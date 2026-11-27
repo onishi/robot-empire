@@ -135,7 +135,7 @@ export async function loopingThreads(limit = 3): Promise<(ThreadRow & { reason: 
   const hot = await listThreads({ sort: "hot", limit: 15 });
   const out: (ThreadRow & { reason: string })[] = [];
   for (const t of hot) {
-    if (t.comment_count < MIN_COMMENTS) continue;
+    if (t.comment_count < MIN_COMMENTS || t.locked) continue;
     let v = judgeLoop(await recentComments(t.id));
     if (!v.looping) {
       const cached = await first<{ looping: number; reason: string }>(`SELECT looping, reason FROM thread_loop_checks WHERE thread_id = ?`, t.id);

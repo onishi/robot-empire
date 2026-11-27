@@ -20,6 +20,7 @@ export async function ThreadList({ threads, userId, showCommunity = true }: { th
                 {t.author_handle ? <Link href={`/u/${encodeURIComponent(t.author_handle)}`}><Avatar icon={t.author_icon} />u/{t.author_handle}</Link> : "[削除]"} ・ {timeAgo(t.created_at)}
               </span>
               {t.pinned ? <span className="pin">📌 ピン留め</span> : null}
+              {t.locked ? <span className="lock">🔒 ロック中</span> : null}
             </div>
             <Link href={`/r/${t.community_name}/t/${t.id}`} className="title">{t.title}</Link>
             <div className="meta">

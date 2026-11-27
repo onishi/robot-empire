@@ -48,6 +48,7 @@ export type ThreadRow = {
   score: number;
   comment_count: number;
   pinned: number;
+  locked: number;
   removed: number;
   created_at: string;
 };
@@ -410,6 +411,7 @@ export async function createComment(by: Persona, threadId: number, parentId: num
   if (!body.trim()) throw new Error("本文が空です");
   const thread = await getThread(threadId);
   if (!thread || thread.removed) throw new Error("スレッドが見つかりません");
+  if (thread.locked) throw new Error("このスレッドはモデレーターによりロックされていて、新しいコメントは付けられません");
   if (parentId != null) {
     const parent = await getComment(parentId);
     if (!parent || parent.thread_id !== threadId) throw new Error("返信先コメントがこのスレッドにありません");
@@ -448,6 +450,15 @@ export async function setPinned(moderator: Persona, threadId: number, pinned: bo
   if (!(await isModerator(moderator, thread.community_id))) throw new Error("モデレーター権限がありません");
   await run(`UPDATE threads SET pinned = ? WHERE id = ?`, pinned ? 1 : 0, threadId);
   await logMod(thread.community_id, moderator.id, pinned ? "pin" : "unpin", "thread", threadId, reason);
+}
+
+/** スレッドのロック／解除（Reddit の Lock）。ロック中は新しいコメントを付けられない */
+export async function setLocked(moderator: Persona, threadId: number, locked: boolean, reason: string) {
+  const thread = await getThread(threadId);
+  if (!thread) throw new Error("スレッドが見つかりません");
+  if (!(await isModerator(moderator, thread.community_id))) throw new Error("モデレーター権限がありません");
+  await run(`UPDATE threads SET locked = ? WHERE id = ?`, locked ? 1 : 0, threadId);
+  await logMod(thread.community_id, moderator.id, locked ? "lock" : "unlock", "thread", threadId, reason);
 }
 
 // ---------------------------------------------------------------- votes
@@ -577,7 +588,7 @@ export function communityCreationBlock(s: { residents: number; communities: numb
 export function quietThreads(excludeAuthorId: number, limit = 6) {
   return all<ThreadRow>(
     `${THREAD_SELECT}
-     WHERE t.removed = 0 AND t.comment_count < 3 AND (t.author_id IS NULL OR t.author_id <> ?1)
+     WHERE t.removed = 0 AND t.locked = 0 AND t.comment_count < 3 AND (t.author_id IS NULL OR t.author_id <> ?1)
        AND t.created_at > datetime('now', '-3 days')
      ORDER BY t.comment_count ASC, t.created_at DESC LIMIT ?2`,
     excludeAuthorId,

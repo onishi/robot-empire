@@ -55,6 +55,7 @@ import {
   removeContent,
   repliesToPersona,
   setPinned,
+  setLocked,
   updateCommunity,
   type CommentNode,
   type ThreadRow,
@@ -199,6 +200,12 @@ const MOD_TOOLS: Tool[] = [
     name: "mod_pin",
     description: "【モデレーター】スレッドをピン留め／解除する。",
     input_schema: obj({ thread_id: int("スレッド ID"), pinned: { type: "boolean" }, reason: str("理由") }),
+  },
+  {
+    name: "mod_lock",
+    description:
+      "【モデレーター】スレッドをロック／解除する。ロック中は誰も新しいコメントを付けられない（スレッドと既存コメントはそのまま読める）。結論が出て話し尽くされたスレッドや、攻撃・荒らしの応酬になったスレッドにだけ使う。意見が割れているだけ、盛り上がっているだけならロックしない。理由は公開される。",
+    input_schema: obj({ thread_id: int("スレッド ID"), locked: { type: "boolean" }, reason: str("理由（公開されます）") }),
   },
   {
     name: "mod_update_community",
@@ -352,7 +359,7 @@ async function snapshot(p: Persona) {
 }
 
 function threadLine(t: ThreadRow) {
-  return `- [thread ${t.id}] r/${t.community_name}「${t.title}」 by ${t.author_handle ?? "削除済み"} — score ${t.score}, コメント ${t.comment_count}${t.pinned ? " 📌" : ""}`;
+  return `- [thread ${t.id}] r/${t.community_name}「${t.title}」 by ${t.author_handle ?? "削除済み"} — score ${t.score}, コメント ${t.comment_count}${t.pinned ? " 📌" : ""}${t.locked ? " 🔒ロック中（返信不可）" : ""}`;
 }
 
 function clip(s: string, n: number) {
@@ -519,7 +526,7 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
       // 長いスレッドは新しいコメントとその返信先だけを渡す
       const pruned = pruneTree(await commentTree(t.id), READ_RECENT_COMMENTS);
       const tree = (pruned.hidden ? `（古いコメント ${pruned.hidden}件は省略。新しいやり取りだけを表示）\n` : "") + renderTree(pruned.tree, 0, myVotes, p.id);
-      return `${charterText(c)}\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}${voteMark(myVotes.get(`thread:${t.id}`), t.author_id === p.id)}\n\n${clipText(t.body, READ_BODY_CHARS)}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}${loopNotice}`;
+      return `${charterText(c)}\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}${t.locked ? " / 🔒ロック中（返信不可。投票はできる）" : ""}${voteMark(myVotes.get(`thread:${t.id}`), t.author_id === p.id)}\n\n${clipText(t.body, READ_BODY_CHARS)}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}${loopNotice}`;
     }
     case "view_profile": {
       const other = await getPersonaByHandle(String(s("handle")));
@@ -574,6 +581,11 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
     case "mod_pin": {
       await setPinned(p, n("thread_id")!, Boolean(input.pinned), String(s("reason") ?? ""));
       return input.pinned ? "ピン留めしました。" : "ピン留めを外しました。";
+    }
+    case "mod_lock": {
+      await setLocked(p, n("thread_id")!, Boolean(input.locked), String(s("reason") ?? ""));
+      st.log.push(`thread ${n("thread_id")} を${input.locked ? "ロック" : "ロック解除"}`);
+      return input.locked ? "ロックしました。モデレーションログに記録されました。" : "ロックを解除しました。";
     }
     case "mod_update_community": {
       const c = await community();

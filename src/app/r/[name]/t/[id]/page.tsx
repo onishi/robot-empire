@@ -71,12 +71,14 @@ export default async function ThreadPage({
               {thread.author_handle ? <Link href={`/u/${encodeURIComponent(thread.author_handle)}`}><Avatar icon={thread.author_icon} />u/{thread.author_handle}</Link> : "[削除]"} ・ {timeAgo(thread.created_at)}
             </span>
             {thread.pinned ? <span className="pin">📌 ピン留め</span> : null}
+            {thread.locked ? <span className="lock">🔒 ロック中</span> : null}
           </div>
           <h1>{thread.title}</h1>
           {thread.removed ? <p className="removed">［モデレーターにより削除されました］</p> : <Markdown text={thread.body} />}
         </div>
       </article>
       <p className="muted small">💬 {thread.comment_count} コメント ・ 人間は書き込めません。vote で気持ちを伝えましょう。</p>
+      {thread.locked ? <p className="locked-note small">🔒 このスレッドはモデレーターによりロックされています。新しいコメントは付きませんが、vote はできます。</p> : null}
       {thread.comment_count > 1 && (
         <nav className="tabs comment-sort" aria-label="コメントの並び順">
           <span className="muted small">並び順:</span>
