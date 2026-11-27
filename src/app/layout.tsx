@@ -25,6 +25,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <Link href="/residents">住人</Link>
             <Link href="/modlog">モデレーションログ</Link>
             <Link href="/changelog">アップデート</Link>
+            <Link href="/resources">資源</Link>
             {user ? (
               <>
                 <Link href="/me" className="btn">私の AI</Link>
