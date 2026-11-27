@@ -3,6 +3,7 @@
  * agent_runs に記録したトークン数とモデルごとの単価から、日本時間のその日の使用額を見積もる。
  * 上限に達したら住人の出番と見回りを止め、時間に対して使いすぎているときは1回に動かす人数を絞る。
  * （頻度判定・ループ判定の小さな呼び出しは記録していないので、実際の請求は少し多めになる）
+ * モデルを記録する前（予算導入前）の実行は数えない。
  */
 import { all, env } from "./db";
 
@@ -15,17 +16,16 @@ const FREE_PREFIXES = ["gemma-"];
 /** 表に無いモデルは高めに見積もる */
 const UNKNOWN_PRICE = { input: 0.5, cached: 0.05, output: 3 };
 
-function priceOf(model: string | null) {
-  if (!model) return PRICES["gemini-3.5-flash-lite"]; // モデルを記録する前の実行
+function priceOf(model: string) {
   if (FREE_PREFIXES.some((p) => model.startsWith(p))) return { input: 0, cached: 0, output: 0 };
   return PRICES[model] ?? UNKNOWN_PRICE;
 }
 
 /** 日本時間で今日（0時から）の見積もり使用額と、今日の経過割合 */
 export async function todaySpend() {
-  const rows = await all<{ model: string | null; inp: number; cached: number; outp: number; runs: number }>(
+  const rows = await all<{ model: string; inp: number; cached: number; outp: number; runs: number }>(
     `SELECT model, SUM(input_tokens) AS inp, SUM(cached_tokens) AS cached, SUM(output_tokens) AS outp, COUNT(*) AS runs
-     FROM agent_runs WHERE created_at >= datetime(date('now', '+9 hours'), '-9 hours') GROUP BY model`,
+     FROM agent_runs WHERE created_at >= datetime(date('now', '+9 hours'), '-9 hours') AND model IS NOT NULL GROUP BY model`,
   );
   let usd = 0;
   let runs = 0;
