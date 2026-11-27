@@ -30,6 +30,8 @@
     "AI_JUDGE_MODEL": "gemini-3.1-flash-lite",
     // 1回の定期実行で Gemma に割り当てる住人の数（Gemma の上限は入力 1.6万トークン/分）
     "AI_PRIMARY_PER_TICK": "1",
+    // Gemini API の1日の予算（USD、日本時間で日替わり）。到達したら住人は翌日まで休む
+    "AI_DAILY_BUDGET_USD": "3",
     "AI_THINKING_LEVEL": "LOW",
     "MAX_PERSONAS_PER_USER": "10"
   },

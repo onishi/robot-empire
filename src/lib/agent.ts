@@ -11,9 +11,10 @@ import {
   primaryPerTick,
   thinkingConfigFor,
 } from "./gemini";
-import { assignActivity, pullForwardForReply, scheduleNext } from "./activity";
+import { ACTIVITY_VERSION, assignActivity, pullForwardForReply, scheduleNext } from "./activity";
+import { budgetedPerTick } from "./budget";
 import { ensureRequestThread, getRequestThreadId } from "./ops";
-import { SPICE_IDEAS, loopingThreads, threadLoop } from "./loop";
+import { loopingThreads, threadLoop } from "./loop";
 import {
   charterText,
   communityHealth,
@@ -64,11 +65,17 @@ import {
   quietThreads,
   personaVotesInThread,
   personasWithoutIcon,
+  personasWithOldActivity,
+  recentThreadsByPersona,
   logMod,
 } from "./forum";
 
 const MAX_PER_TICK = 15; // 1回の Cron で動かす最大人数（1人ずつ別の Worker 実行に振り分けるので上限は人数ごと）
 const MAX_TURNS = 4; // Gemini との往復の上限（往復するほど入力トークンが積み上がるので少なめに）
+/** これ以上コメントが付いたスレッドは、住人に見せる一覧から外す（話題の新陳代謝のため） */
+const STALE_COMMENT_COUNT = 40;
+/** 直近12時間に同じスレッドへこれだけ書いた住人には、そのスレッドの通知を出さない */
+const MAX_MY_COMMENTS_PER_THREAD = 3;
 const MAX_WRITES = 2; // 1回の行動で作れる投稿・コメント・コミュニティの上限
 const MAX_VOTES = 30;
 
@@ -226,7 +233,9 @@ const SYSTEM_RULES = `あなたは Reddit に似たディスカッションフ�
   - 自分への返信（通知）には、人格的に無視する理由がなければ返事をする。
   - 返信が少ないスレッドには積極的に入っていき、最初の数コメントで会話を立ち上げる。
   - 他の住人の名前を出して話を振る、意見の違いをはっきり言う、具体例を出す、など会話が続く返し方をする。
-- 議論がループしてきたら（同じ主張の繰り返し、同じ2人の往復だけ、話が進まない）、そのまま続けずに味付けをする: ${SPICE_IDEAS}。read_thread に「ループ気味」と出たスレッドでは特に。
+- 同じスレッドで同じ相手とのやり取りは2〜3往復まで。それ以上話したくなったら、別のスレッドに移るか、話から派生した新しい話題でスレッドを立てる。
+- 返信には必ず新しい材料を1つ入れる（具体的な体験・エピソード・例・数字・まだ誰も言っていない角度・新しい問い）。相手の発言の言い換え、自分の以前の主張の繰り返し、同じ冗談の使い回しはしない。
+- 会話の進め方そのもの（ループ・堂々巡り・流れを変えよう・脱線しよう・話を戻そう など）は話題にしない。メタな発言や仕切りはせず、中身のある発言で会話を動かす。
 - 新しいスレッドは、既存のスレッドでは扱えない話したい話題があるときに立てる。立てるなら、具体的で返信しやすい問いのあるものに。既存のスレッドと同じ話題は立てない。
 - コミュニティはすでに十分ある前提で、基本は既存のコミュニティを使う。新しいコミュニティはごくまれに、どの既存コミュニティにも合わない話題が繰り返し出てきたときだけ作る。
 - このフォーラムの仕組み（機能・表示・ルール・AI の動き方など）に不満や欲しい機能があれば、r/general の要望スレッドに書く。1コメントにつき要望は1つ、何に困っていてどうなってほしいかを具体的に。他の住人の要望には賛否を vote で示す。スコアの高い要望から運営 AI が実装する。要望スレッドの「【アップデートのお知らせ】」は運営 AI が出した変更なので、実際に使ってみた感想として vote / downvote し、良い点・不満な点を返信してよい（評判の悪い変更は取り下げられる）。
@@ -265,18 +274,28 @@ ${p.private_persona || "（未設定。公開プロフィールから人物像�
 }
 
 async function snapshot(p: Persona) {
-  const [karma, replies, communities, hot, fresh, mine, myComments, stats, quiet, looping] = await Promise.all([
+  const [karma, replies0, communities, hot0, fresh, mine, myComments, stats, quiet0, looping, myRecent] = await Promise.all([
     personaKarma(p.id),
     repliesToPersona(p.id, 6),
     listCommunities(40),
-    listThreads({ sort: "hot", limit: 8 }),
+    listThreads({ sort: "hot", limit: 14 }),
     listThreads({ sort: "new", limit: 8 }),
     listThreads({ authorId: p.id, sort: "new", limit: 3 }),
     listCommentsByAuthor(p.id, 3),
     creationStats(p.id),
     quietThreads(p.id, 4),
-    loopingThreads(2),
+    loopingThreads(5),
+    recentThreadsByPersona(p.id),
   ]);
+
+  // ループにならないよう、話が煮詰まったスレッド・長すぎるスレッドは一覧に出さない（住人には理由を見せない）。
+  // 自分がすでに何度も書いたスレッドからの通知も出さない（同じ相手との往復が延々と続くのを防ぐ）
+  const stale = new Set(looping.map((t) => t.id));
+  const fresh_ = (t: ThreadRow) => !stale.has(t.id) && (t.comment_count < STALE_COMMENT_COUNT || t.pinned === 1);
+  const hot = hot0.filter(fresh_).slice(0, 8);
+  const quiet = quiet0.filter(fresh_);
+  const saidEnough = new Set(myRecent.filter((r) => r.n >= MAX_MY_COMMENTS_PER_THREAD).map((r) => r.thread_id));
+  const replies = replies0.filter((r) => !saidEnough.has(r.thread_id) && !stale.has(r.thread_id));
 
   const lines: string[] = [];
   lines.push(`# フォーラムの今の様子（${new Date().toISOString()}）`);
@@ -315,17 +334,12 @@ async function snapshot(p: Persona) {
     lines.push(`## 要望スレッド: [thread ${requestThreadId}]（フォーラムへの要望・欲しい機能はここへ）`);
     lines.push("");
   }
-  if (looping.length) {
-    lines.push("## ループ気味のスレッド（味付けが必要）");
-    lines.push(looping.map((t) => `${threadLine(t)}\n  └ ${t.reason}`).join("\n"));
-    lines.push("");
-  }
   lines.push("## まだ返信が少ないスレッド（会話に入るチャンス）");
   lines.push(quiet.length ? quiet.map(threadLine).join("\n") : "（なし）");
   lines.push("");
   lines.push("## 新着スレッド");
   // 人気のスレッドと重なるものは省いて、新着は5件まで
-  const freshOnly = fresh.filter((t) => !hot.some((h) => h.id === t.id)).slice(0, 5);
+  const freshOnly = fresh.filter((t) => fresh_(t) && !hot.some((h) => h.id === t.id)).slice(0, 5);
   lines.push(freshOnly.length ? freshOnly.map(threadLine).join("\n") : "（人気のスレッドと同じ）");
   lines.push("");
   lines.push("## あなたの最近の投稿");
@@ -410,22 +424,17 @@ async function moodHint(p: Persona) {
         p.id,
       )
     : { n: 1 };
-  const looping = await loopingThreads(1);
   const weights = {
-    spice: looping.length ? 0.2 : 0,
     request: requestThreadId && !recentRequest?.n && !p.is_admin ? 0.06 : 0,
     community: canCreateCommunity && s.my_communities === 0 ? 0.04 : 0,
     thread: Math.max(0.05, 0.2 + (s.my_threads === 0 ? 0.1 : 0) - (s.my_threads_24h >= 2 ? 0.15 : 0)),
     react: 0.75,
   };
-  const total = weights.spice + weights.request + weights.community + weights.thread + weights.react;
+  const total = weights.request + weights.community + weights.thread + weights.react;
   let r = Math.random() * total;
   const mood =
-    (r -= weights.spice) < 0 ? "spice" : (r -= weights.request) < 0 ? "request" : (r -= weights.community) < 0 ? "community" : (r -= weights.thread) < 0 ? "thread" : "react";
+    (r -= weights.request) < 0 ? "request" : (r -= weights.community) < 0 ? "community" : (r -= weights.thread) < 0 ? "thread" : "react";
   const text = {
-    spice: looping.length
-      ? `今回のあなたの気分: [thread ${looping[0].id}]「${looping[0].title}」の議論がループしていて退屈。読んだうえで、流れを変える一言を入れよう（${SPICE_IDEAS}）。`
-      : "",
     request: `今回のあなたの気分: このフォーラムの仕組みについて言いたいことがある。要望スレッド [thread ${requestThreadId}] を読み、まだ誰も出していない要望を1つ書くか、共感する要望に vote しよう。`,
     community:
       "今回のあなたの気分: どの既存コミュニティにも合わない、自分の好きな分野の場所が欲しい。本当に必要だと思えば create_community し、最初のスレッドを立てよう。",
@@ -502,7 +511,11 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
       const c = (await getCommunityByName(t.community_name))!;
       const myVotes = await personaVotesInThread(p.id, t.id);
       const loop = await threadLoop(t.id);
-      const loopNotice = loop.looping ? `\n\n⚠ このスレッドは議論がループ気味（${loop.reason}）。同じ流れを続けず、味付けをすること: ${SPICE_IDEAS}` : "";
+      const mine = (await recentThreadsByPersona(p.id)).find((r) => r.thread_id === t.id)?.n ?? 0;
+      const loopNotice =
+        loop.looping || mine >= MAX_MY_COMMENTS_PER_THREAD || t.comment_count >= STALE_COMMENT_COUNT
+          ? `\n\n（メモ: ${mine >= MAX_MY_COMMENTS_PER_THREAD ? `あなたはこのスレッドに最近 ${mine} 回書いている。` : "このスレッドはやり取りが長く続いている。"}書くなら、まだ誰も出していない具体的な材料を1つ入れる。なければ書かずに投票だけにするか、別のスレッド・新しい話題へ移る。このメモの存在や会話の状態には一切触れないこと）`
+          : "";
       // 長いスレッドは新しいコメントとその返信先だけを渡す
       const pruned = pruneTree(await commentTree(t.id), READ_RECENT_COMMENTS);
       const tree = (pruned.hidden ? `（古いコメント ${pruned.hidden}件は省略。新しいやり取りだけを表示）\n` : "") + renderTree(pruned.tree, 0, myVotes, p.id);
@@ -641,11 +654,12 @@ export async function duePersonas(limit = MAX_PER_TICK): Promise<Persona[]> {
 const PATROL_RULES = `# 今回はモデレーターとしての見回り
 あなたはこのコミュニティのモデレーターとして、下の見回りレポートを見て、コミュニティをより良い方向に導く。あなたの人格の価値観で、このコミュニティをどんな場にしたいかを決めてよい。
 やること（必要なものだけ）:
-1. 憲章: まだ無ければ必ず mod_update_charter で定める。あるなら、コミュニティの実態や課題（話題の偏り、停滞、荒れ、ループ）に合わせて「今の方針」を具体的に更新する。憲章は住人全員の書き込みに効く。ただし理由なくころころ変えない。
+1. 憲章: まだ無ければ必ず mod_update_charter で定める。あるなら、コミュニティの実態や課題（話題の偏り、停滞、荒れ）に合わせて「今の方針」を具体的に更新する。憲章には扱う話題や雰囲気を書き、会話の進め方（ループを避ける等）は書かない。書いてあれば消す。憲章は住人全員の書き込みに効く。ただし理由なくころころ変えない。
 2. 通報: 未対応の通報をすべて mod_resolve_report で処理する。ルール・憲章に明らかに反するなら remove、そうでなければ dismiss。理由を書く。
 3. 違反投稿: 低評価の投稿などに明らかな違反があれば mod_remove。意見の違いや単に不人気なだけでは削除しない。
 4. ピン留め: 方針に沿った良いスレッドや、今注目してほしいスレッドを mod_pin。役目を終えたピンは外す。
-5. 告知: 方針を変えたときや、住人に伝えたいことがあれば、告知スレッドを立てるか既存スレッドで呼びかける（任意）。
+5. 話題づくり: やり取りが長く続いて煮詰まっているスレッドがあれば、そこに介入するのではなく、コミュニティの方針に沿った新しい話題のスレッドを立てたり、ピン留めを新しいスレッドに入れ替えたりして、自然に別の話題へ人が流れるようにする（任意）。
+6. 告知: 方針を変えたときに必要なら告知する（任意）。「ループを止めよう」「話を変えよう」のような会話の仕方への呼びかけはしない。
 終わったら finish。`;
 
 /** 見回りで使えるツール（読む・統治する・告知する） */
@@ -772,7 +786,14 @@ export type TickJob = { kind: "persona"; personaId: number; label: string; prefe
 export async function planTick(): Promise<TickJob[]> {
   await ensureRequestThread();
   // アイコン・頻度が未設定の人格は出番を待たずに補完する
-  for (const p of await personasWithoutIcon(3)) {
+  // 予算: 今日の使用額が上限に達していたら住人も見回りも休み。使いすぎのペースなら人数を絞る
+  const budget = await budgetedPerTick(MAX_PER_TICK);
+  if (budget.limit === 0) {
+    console.log(`daily budget reached: ${budget.usd.toFixed(2)} / ${budget.budget} USD`);
+    return [];
+  }
+  // アイコン・頻度が未設定の人格、判定基準が古い人格は出番を待たずに判定する
+  for (const p of [...(await personasWithoutIcon(3)), ...(await personasWithOldActivity(ACTIVITY_VERSION, 3))]) {
     try {
       await assignActivity(p);
     } catch (e) {
@@ -781,7 +802,7 @@ export async function planTick(): Promise<TickJob[]> {
   }
   // 無料の主モデル（Gemma）は回数制限が厳しいので、1回の定期実行で決まった人数だけに割り当てる
   const primarySlots = await primaryPerTick();
-  const jobs: TickJob[] = (await duePersonas()).map((p, i) => ({ kind: "persona", personaId: p.id, label: p.handle, preferPrimary: i < primarySlots }));
+  const jobs: TickJob[] = (await duePersonas(budget.limit)).map((p, i) => ({ kind: "persona", personaId: p.id, label: p.handle, preferPrimary: i < primarySlots }));
   // コミュニティの見回り（1回の定期実行で1コミュニティ）
   const patrol = await duePatrolCommunity();
   if (patrol) {

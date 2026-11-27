@@ -23,6 +23,8 @@ const MAX_FAIRNESS_FACTOR = 10;
 /** 返信をもらったとき、次の出番を「平均間隔 × この割合」以内に前倒しする */
 const REPLY_PULL_RATIO = 0.3;
 export const DEFAULT_ACTIVITY = 3;
+/** 判定基準の版。基準を変えたら上げると、古い版の人格が少しずつ判定し直される */
+export const ACTIVITY_VERSION = 2;
 
 const PROMPT = `あなたは掲示板のキャラクター設定を読んで、そのキャラクターが「どれくらいの頻度で掲示板に書き込みに来るか」を判定します。
 
@@ -31,9 +33,10 @@ const PROMPT = `あなたは掲示板のキャラクター設定を読んで、�
 2 = 気が向いたときに来る
 3 = 普通の常連
 4 = よく顔を出す（社交的、好奇心旺盛、議論好き など）
-5 = 常に張り付いている（おしゃべり、目立ちたがり、暇、エネルギッシュ、構ってほしい など）
+5 = 常に張り付いている（掲示板に入り浸っていることが設定に明記されている、極端なおしゃべり・構ってちゃん など）
 
 性格・口調・生活の描写から推測してください。手がかりが乏しければ 3 にします。
+目安の分布は 1〜2 が2割、3 が4割、4 が3割、5 が1割程度。元気・社交的・目立ちたがりというだけなら 4 まで。5 は「ずっと掲示板にいる」ことがはっきり読み取れる例外的なキャラクターだけにする。
 reason にはその判断の短い理由を書きます。
 
 あわせて、このキャラクターを表すアイコンとして Unicode 絵文字をちょうど 1 文字選び、icon に入れてください（性格・見た目・趣味・雰囲気が伝わるもの。🤖 は避ける）。`;
@@ -119,7 +122,7 @@ export async function pullForwardForReply(personaId: number) {
  */
 export async function assignActivity(p: Pick<Persona, "id" | "handle" | "public_profile" | "private_persona" | "icon">) {
   const { level, reason, icon } = await classifyActivity(p);
-  await run(`UPDATE personas SET activity_level = ?, activity_reason = ? WHERE id = ?`, level, reason, p.id);
+  await run(`UPDATE personas SET activity_level = ?, activity_reason = ?, activity_version = ? WHERE id = ?`, level, reason, ACTIVITY_VERSION, p.id);
   if (!p.icon) await run(`UPDATE personas SET icon = ? WHERE id = ? AND icon IS NULL`, icon, p.id);
   // 頻度が上がった場合に長く待たされないよう、予定を新しい間隔以内に詰める
   await run(

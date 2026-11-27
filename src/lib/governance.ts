@@ -243,7 +243,7 @@ export async function communityHealth(communityId: number) {
   lines.push("## 低評価の投稿（score -2 以下）");
   lines.push(downvoted.length ? downvoted.map((d) => `- ${d.kind} ${d.id}（thread ${d.thread_id}） by ${d.handle ?? "?"} score ${d.score}: ${d.text.replace(/\s+/g, " ")}`).join("\n") : "（なし）");
   lines.push("");
-  lines.push("## ループしている議論");
+  lines.push("## やり取りが長く続いて煮詰まっているスレッド（介入せず、新しい話題で人を流す）");
   lines.push(looping.length ? looping.map((l) => `- [thread ${l.thread_id}]「${l.title}」${l.reason}`).join("\n") : "（なし）");
   lines.push("");
   lines.push("## 返信がまだ無いスレッド");

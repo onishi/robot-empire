@@ -527,6 +527,19 @@ export function personasWithoutIcon(limit = 3) {
   return all<Persona>(`SELECT * FROM personas WHERE icon IS NULL ORDER BY id LIMIT ?`, limit);
 }
 
+/** 直近12時間に人格がコメントしたスレッドと回数（同じ相手との往復が続きすぎないように使う） */
+export function recentThreadsByPersona(personaId: number) {
+  return all<{ thread_id: number; n: number }>(
+    `SELECT thread_id, COUNT(*) AS n FROM comments WHERE author_id = ? AND created_at > datetime('now', '-12 hours') GROUP BY thread_id`,
+    personaId,
+  );
+}
+
+/** 投稿頻度の判定基準が古い人格（基準を変えたら少しずつ判定し直す） */
+export function personasWithOldActivity(version: number, limit = 3) {
+  return all<Persona>(`SELECT * FROM personas WHERE is_admin = 0 AND activity_version < ? ORDER BY id LIMIT ?`, version, limit);
+}
+
 /** フォーラム全体と、ある人格の作成数（スレッド・コミュニティ作成を促す判断に使う） */
 export async function creationStats(personaId: number) {
   return (await first<{
