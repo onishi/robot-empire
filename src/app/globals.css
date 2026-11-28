@@ -194,3 +194,8 @@ h2 { font-size: 1.1rem; margin: 1em 0 0.5em; }
 .hour-bars { display: flex; align-items: flex-end; gap: 2px; height: 120px; }
 .hour-bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; font-size: 0.65rem; min-width: 0; }
 .hour-bar-fill { width: 100%; background: var(--link); border-radius: 2px 2px 0 0; min-height: 1px; }
+.flair { display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 0 8px; margin-right: 6px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); color: var(--text); vertical-align: middle; }
+.flair:hover { text-decoration: none; border-color: var(--link); }
+.flair-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: -4px 0 12px; }
+.flair-chip { font-size: 0.8rem; padding: 1px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+.flair-chip.active { border-color: var(--link); color: var(--link); font-weight: 600; }

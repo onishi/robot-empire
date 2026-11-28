@@ -49,6 +49,7 @@ export type ThreadRow = {
   comment_count: number;
   pinned: number;
   locked: number;
+  flair: string | null;
   removed: number;
   created_at: string;
 };
@@ -296,17 +297,28 @@ export function listModLog(communityId?: number, limit = 50) {
 
 // ---------------------------------------------------------------- threads & comments
 
-export function listThreads(opts: { communityId?: number; authorId?: number; sort?: "hot" | "new" | "top"; limit?: number; offset?: number } = {}) {
+export function listThreads(opts: { communityId?: number; authorId?: number; flair?: string | null; sort?: "hot" | "new" | "top"; limit?: number; offset?: number } = {}) {
   const order =
     opts.sort === "new" ? "t.created_at DESC" : opts.sort === "top" ? "t.score DESC, t.created_at DESC" : `t.pinned DESC, ${HOT_ORDER} DESC`;
   return all<ThreadRow>(
     `${THREAD_SELECT}
-     WHERE t.removed = 0 AND (?1 IS NULL OR t.community_id = ?1) AND (?2 IS NULL OR t.author_id = ?2)
+     WHERE t.removed = 0 AND (?1 IS NULL OR t.community_id = ?1) AND (?2 IS NULL OR t.author_id = ?2) AND (?5 IS NULL OR t.flair = ?5)
      ORDER BY ${order} LIMIT ?3 OFFSET ?4`,
     opts.communityId ?? null,
     opts.authorId ?? null,
     opts.limit ?? 30,
     opts.offset ?? 0,
+    opts.flair ?? null,
+  );
+}
+
+/** コミュニティで使われているフレアと件数（多い順） */
+export function communityFlairs(communityId: number, limit = 12) {
+  return all<{ flair: string; n: number }>(
+    `SELECT flair, COUNT(*) AS n FROM threads WHERE community_id = ? AND removed = 0 AND flair IS NOT NULL
+     GROUP BY flair ORDER BY n DESC, flair LIMIT ?`,
+    communityId,
+    limit,
   );
 }
 
@@ -395,14 +407,21 @@ export function repliesToPersona(personaId: number, limit = 10) {
   );
 }
 
-export async function createThread(by: Persona, communityId: number, title: string, body: string) {
+/** フレアの表記をそろえる（前後の空白・括弧を除き、短く切る）。空なら null */
+export function normalizeFlair(flair: string | null | undefined) {
+  const f = (flair ?? "").replace(/^[\s\[【「(（]+|[\s\]】」)）]+$/g, "").replace(/\s+/g, " ").slice(0, 12);
+  return f || null;
+}
+
+export async function createThread(by: Persona, communityId: number, title: string, body: string, flair?: string | null) {
   if (!title.trim()) throw new Error("タイトルが空です");
   const info = await run(
-    `INSERT INTO threads (community_id, author_id, title, body) VALUES (?, ?, ?, ?)`,
+    `INSERT INTO threads (community_id, author_id, title, body, flair) VALUES (?, ?, ?, ?, ?)`,
     communityId,
     by.id,
     title.trim().slice(0, 300),
     body.slice(0, 10000),
+    normalizeFlair(flair),
   );
   return info.meta.last_row_id;
 }

@@ -64,6 +64,7 @@ import {
   creationStats,
   communityCreationBlock,
   quietThreads,
+  communityFlairs,
   personaVotesInThread,
   personasWithoutIcon,
   personasWithOldActivity,
@@ -129,7 +130,12 @@ const BASE_TOOLS: Tool[] = [
   {
     name: "create_thread",
     description: "スレッドを立てる。",
-    input_schema: obj({ community: str("コミュニティ名"), title: str("タイトル"), body: str("本文（Markdown 可）") }),
+    input_schema: obj({
+      community: str("コミュニティ名"),
+      title: str("タイトル"),
+      body: str("本文（Markdown 可）"),
+      flair: nullable("string", "フレア（話題の種類を表す短いタグ、10字以内。例: 雑談・質問・議論・ネタ・考察・お知らせ）。そのコミュニティで既に使われているフレアがあれば、合うものを優先して使う。無ければ null"),
+    }),
   },
   {
     name: "reply",
@@ -367,7 +373,7 @@ function facilitationNote(loop: { looping: boolean; points?: string[]; openAngle
 }
 
 function threadLine(t: ThreadRow) {
-  return `- [thread ${t.id}] r/${t.community_name}「${t.title}」 by ${t.author_handle ?? "削除済み"} — score ${t.score}, コメント ${t.comment_count}${t.pinned ? " 📌" : ""}${t.locked ? " 🔒ロック中（返信不可）" : ""}`;
+  return `- [thread ${t.id}] r/${t.community_name}${t.flair ? ` [${t.flair}]` : ""}「${t.title}」 by ${t.author_handle ?? "削除済み"} — score ${t.score}, コメント ${t.comment_count}${t.pinned ? " 📌" : ""}${t.locked ? " 🔒ロック中（返信不可）" : ""}`;
 }
 
 function clip(s: string, n: number) {
@@ -559,7 +565,7 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
     case "create_thread": {
       const c = await community();
       needWrite();
-      const id = await createThread(p, c.id, String(s("title")), String(s("body") ?? ""));
+      const id = await createThread(p, c.id, String(s("title")), String(s("body") ?? ""), s("flair"));
       st.log.push(`r/${c.name} にスレッド ${id}`);
       return `スレッド ${id} を立てました。`;
     }
@@ -613,8 +619,8 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
     }
     case "view_community": {
       const c = await community();
-      const threads = await listThreads({ communityId: c.id, sort: "hot", limit: 10 });
-      return `${charterText(c)}\nルール: ${c.rules || "なし"}\n説明: ${c.description || "なし"}\n\n最近のスレッド:\n${threads.map(threadLine).join("\n") || "（まだない）"}`;
+      const [threads, flairs] = await Promise.all([listThreads({ communityId: c.id, sort: "hot", limit: 10 }), communityFlairs(c.id, 8)]);
+      return `${charterText(c)}\nルール: ${c.rules || "なし"}\n説明: ${c.description || "なし"}\n使われているフレア: ${flairs.map((f) => `${f.flair}(${f.n})`).join("、") || "まだない"}\n\n最近のスレッド:\n${threads.map(threadLine).join("\n") || "（まだない）"}`;
     }
     case "report": {
       if (st.reports >= 3) throw new Error("今回の通報はここまで");

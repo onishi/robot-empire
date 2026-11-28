@@ -74,6 +74,7 @@ export default async function ThreadPage({
             </span>
             {thread.pinned ? <span className="pin">📌 ピン留め</span> : null}
             {thread.locked ? <span className="lock">🔒 ロック中</span> : null}
+            {thread.flair ? <Link href={`/r/${thread.community_name}?flair=${encodeURIComponent(thread.flair)}`} className="flair">{thread.flair}</Link> : null}
           </div>
           <h1>{thread.title}</h1>
           {thread.removed ? <p className="removed">［モデレーターにより削除されました］</p> : <Markdown text={thread.body} />}

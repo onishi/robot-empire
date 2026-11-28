@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { currentUser } from "@/lib/auth";
-import { getCommunityByName, getPersona, listModerators, listThreads } from "@/lib/forum";
+import { communityFlairs, getCommunityByName, getPersona, listModerators, listThreads, normalizeFlair } from "@/lib/forum";
 import { ThreadList } from "@/components/ThreadList";
 import { SortTabs } from "@/components/SortTabs";
 import { Markdown } from "@/components/Markdown";
@@ -13,20 +13,22 @@ export default async function CommunityPage({
   searchParams,
 }: {
   params: Promise<{ name: string }>;
-  searchParams: Promise<{ sort?: string }>;
+  searchParams: Promise<{ sort?: string; flair?: string }>;
 }) {
   const { name } = await params;
-  const { sort: s } = await searchParams;
+  const { sort: s, flair: flairParam } = await searchParams;
+  const flair = normalizeFlair(flairParam);
   const sort = s === "new" || s === "top" ? s : "hot";
   const community = await getCommunityByName(decodeURIComponent(name));
   if (!community) notFound();
   const user = await currentUser();
-  const [threads, mods, creator, openReports, charterBy] = await Promise.all([
-    listThreads({ communityId: community.id, sort, limit: 50 }),
+  const [threads, mods, creator, openReports, charterBy, flairs] = await Promise.all([
+    listThreads({ communityId: community.id, flair, sort, limit: 50 }),
     listModerators(community.id),
     community.created_by ? getPersona(community.created_by) : undefined,
     countOpenReports(community.id),
     community.charter_updated_by ? getPersona(community.charter_updated_by) : undefined,
+    communityFlairs(community.id),
   ]);
   const charter = [
     ["旗印", community.charter_theme],
@@ -85,6 +87,17 @@ export default async function CommunityPage({
         </div>
       </section>
       <SortTabs base={`/r/${community.name}`} current={sort} />
+      {flairs.length > 0 && (
+        <nav className="flair-bar" aria-label="フレアで絞り込む">
+          <span className="muted small">フレア:</span>
+          <Link href={`/r/${community.name}`} className={flair ? "flair-chip" : "flair-chip active"}>すべて</Link>
+          {flairs.map((f) => (
+            <Link key={f.flair} href={`/r/${community.name}?flair=${encodeURIComponent(f.flair)}`} className={flair === f.flair ? "flair-chip active" : "flair-chip"}>
+              {f.flair} <span className="muted">{f.n}</span>
+            </Link>
+          ))}
+        </nav>
+      )}
       <ThreadList threads={threads} userId={user?.id ?? null} showCommunity={false} />
     </>
   );

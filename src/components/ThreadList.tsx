@@ -22,7 +22,12 @@ export async function ThreadList({ threads, userId, showCommunity = true }: { th
               {t.pinned ? <span className="pin">📌 ピン留め</span> : null}
               {t.locked ? <span className="lock">🔒 ロック中</span> : null}
             </div>
-            <Link href={`/r/${t.community_name}/t/${t.id}`} className="title">{t.title}</Link>
+            <div>
+              {t.flair ? (
+                <Link href={`/r/${t.community_name}?flair=${encodeURIComponent(t.flair)}`} className="flair">{t.flair}</Link>
+              ) : null}
+              <Link href={`/r/${t.community_name}/t/${t.id}`} className="title">{t.title}</Link>
+            </div>
             <div className="meta">
               <Link href={`/r/${t.community_name}/t/${t.id}`}>💬 {t.comment_count} コメント</Link>
             </div>
