@@ -18,7 +18,7 @@ import {
   removeContent,
 } from "./forum";
 
-const PATROL_MINUTES = 90; // 見回りの平均間隔（±50%）
+const PATROL_MINUTES = 180; // 見回りの平均間隔（±50%）
 const MAX_REPORTS_PER_PERSONA_PER_DAY = 5;
 
 // ---------------------------------------------------------------- 憲章

@@ -20,8 +20,8 @@
   ],
   // AI 住人を動かす定期実行（UTC 指定）
   //   昼 9:00〜22:59 JST（UTC 0:00〜13:59）は5分おき
-  //   夜 23:00〜8:59 JST（UTC 14:00〜23:59）は30分おき
-  "triggers": { "crons": ["*/5 0-13 * * *", "*/30 14-23 * * *"] },
+  //   夜 23:00〜8:59 JST（UTC 14:00〜23:59）は1時間おき（1回あたりの人数も少なめ）
+  "triggers": { "crons": ["*/5 0-13 * * *", "0 14-23 * * *"] },
   "vars": {
     // 住人の出番は Gemma 4（無料）。混雑・回数制限のときは AI_FALLBACK_MODEL に切り替える
     "AI_MODEL": "gemma-4-26b-a4b-it",
@@ -31,7 +31,7 @@
     // 1回の定期実行で Gemma に割り当てる住人の数（Gemma の上限は入力 1.6万トークン/分）
     "AI_PRIMARY_PER_TICK": "1",
     // Gemini API の1日の予算（USD、日本時間で日替わり）。到達したら住人は翌日まで休む
-    "AI_DAILY_BUDGET_USD": "3",
+    "AI_DAILY_BUDGET_USD": "2",
     "AI_THINKING_LEVEL": "LOW",
     "MAX_PERSONAS_PER_USER": "10"
   },

@@ -71,7 +71,8 @@ import {
   logMod,
 } from "./forum";
 
-const MAX_PER_TICK = 15; // 1回の Cron で動かす最大人数（1人ずつ別の Worker 実行に振り分けるので上限は人数ごと）
+const MAX_PER_TICK = 15;
+const NIGHT_PER_TICK = 5; // 夜の1回あたりの最大人数 // 1回の Cron で動かす最大人数（1人ずつ別の Worker 実行に振り分けるので上限は人数ごと）
 const MAX_TURNS = 4; // Gemini との往復の上限（往復するほど入力トークンが積み上がるので少なめに）
 /** これ以上コメントが付いたスレッドは、住人に見せる一覧から外す（話題の新陳代謝のため） */
 const STALE_COMMENT_COUNT = 40;
@@ -821,7 +822,10 @@ export async function planTick(): Promise<TickJob[]> {
   }
   // 無料の主モデル（Gemma）は回数制限が厳しいので、1回の定期実行で決まった人数だけに割り当てる
   const primarySlots = await primaryPerTick();
-  const jobs: TickJob[] = (await duePersonas(budget.limit)).map((p, i) => ({ kind: "persona", personaId: p.id, label: p.handle, preferPrimary: i < primarySlots }));
+  // 夜（23〜9時 JST）は1回あたりの人数を絞る（費用と、朝にまとめて動くのを抑えるため）
+  const jstHour = (new Date().getUTCHours() + 9) % 24;
+  const perTick = jstHour >= 23 || jstHour < 9 ? Math.min(budget.limit, NIGHT_PER_TICK) : budget.limit;
+  const jobs: TickJob[] = (await duePersonas(perTick)).map((p, i) => ({ kind: "persona", personaId: p.id, label: p.handle, preferPrimary: i < primarySlots }));
   // コミュニティの見回り（1回の定期実行で1コミュニティ）
   const patrol = await duePatrolCommunity();
   if (patrol) {
