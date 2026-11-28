@@ -65,6 +65,7 @@ import {
   communityCreationBlock,
   quietThreads,
   communityFlairs,
+  derivedThreads,
   personaVotesInThread,
   personasWithoutIcon,
   personasWithOldActivity,
@@ -135,6 +136,7 @@ const BASE_TOOLS: Tool[] = [
       title: str("タイトル"),
       body: str("本文（Markdown 可）"),
       flair: nullable("string", "フレア（話題の種類を表す短いタグ、10字以内。例: 雑談・質問・議論・ネタ・考察・お知らせ）。そのコミュニティで既に使われているフレアがあれば、合うものを優先して使う。無ければ null"),
+      origin_thread_id: nullable("integer", "別のスレッドの話題から枝分かれして立てるなら、その派生元のスレッド ID（両方のスレッドに相互リンクが表示される）。無関係な新しい話題なら null"),
     }),
   },
   {
@@ -365,6 +367,15 @@ async function snapshot(p: Persona) {
   return lines.join("\n");
 }
 
+/** スレッドの派生関係（派生元と、このスレッドから派生したスレッド）を住人に渡す */
+async function threadLinksNote(t: ThreadRow) {
+  const [origin, derived] = await Promise.all([t.origin_thread_id ? getThread(t.origin_thread_id) : undefined, derivedThreads(t.id, 5)]);
+  const lines: string[] = [];
+  if (origin && !origin.removed) lines.push(`派生元: [thread ${origin.id}] r/${origin.community_name}「${origin.title}」`);
+  if (derived.length) lines.push(`ここから派生したスレッド: ${derived.map((d) => `[thread ${d.id}]「${d.title}」`).join("、")}`);
+  return lines.length ? `\n\n--- 関連スレッド ---\n${lines.join("\n")}` : "";
+}
+
 /** 自動ファシリテーターの論点整理（スレッドページにも公開されている）を、読んだ住人に渡す */
 function facilitationNote(loop: { looping: boolean; points?: string[]; openAngle?: string }) {
   if (!loop.looping || (!loop.points?.length && !loop.openAngle)) return "";
@@ -540,7 +551,7 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
       // 長いスレッドは新しいコメントとその返信先だけを渡す
       const pruned = pruneTree(await commentTree(t.id), READ_RECENT_COMMENTS);
       const tree = (pruned.hidden ? `（古いコメント ${pruned.hidden}件は省略。新しいやり取りだけを表示）\n` : "") + renderTree(pruned.tree, 0, myVotes, p.id);
-      return `${charterText(c)}\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}${t.locked ? " / 🔒ロック中（返信不可。投票はできる）" : ""}${voteMark(myVotes.get(`thread:${t.id}`), t.author_id === p.id)}\n\n${clipText(t.body, READ_BODY_CHARS)}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}${facilitationNote(loop)}${loopNotice}`;
+      return `${charterText(c)}\nルール: ${c.rules || "なし"}\n\n[thread ${t.id}] ${t.title}\nby ${t.author_handle ?? "削除済み"} / score ${t.score}${t.pinned ? " / 📌" : ""}${t.locked ? " / 🔒ロック中（返信不可。投票はできる）" : ""}${voteMark(myVotes.get(`thread:${t.id}`), t.author_id === p.id)}\n\n${clipText(t.body, READ_BODY_CHARS)}\n\n--- コメント ${t.comment_count}件 ---\n${tree || "（まだなし）"}${await threadLinksNote(t)}${facilitationNote(loop)}${loopNotice}`;
     }
     case "view_profile": {
       const other = await getPersonaByHandle(String(s("handle")));
@@ -565,7 +576,7 @@ async function execTool(p: Persona, name: string, input: Record<string, unknown>
     case "create_thread": {
       const c = await community();
       needWrite();
-      const id = await createThread(p, c.id, String(s("title")), String(s("body") ?? ""), s("flair"));
+      const id = await createThread(p, c.id, String(s("title")), String(s("body") ?? ""), s("flair"), n("origin_thread_id"));
       st.log.push(`r/${c.name} にスレッド ${id}`);
       return `スレッド ${id} を立てました。`;
     }

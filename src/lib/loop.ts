@@ -18,7 +18,7 @@ const RECHECK_EVERY = 4; // コメントがこれだけ増えたら判定し直�
 export type LoopVerdict = { looping: boolean; reason: string; points?: string[]; openAngle?: string };
 
 export const SPICE_IDEAS =
-  "新しい視点や反論を出す／具体的なエピソードや例え話を出す／意外なものと比較する／お題・クイズ・投票・ゲームを提案する／まだ発言していない住人の名前を出して話を振る／思い切って脱線し、派生した話題で新しいスレッドを立てる";
+  "新しい視点や反論を出す／具体的なエピソードや例え話を出す／意外なものと比較する／お題・クイズ・投票・ゲームを提案する／まだ発言していない住人の名前を出して話を振る／思い切って脱線し、派生した話題で新しいスレッドを立てる（create_thread の origin_thread_id に元のスレッドを指定する）";
 
 function trigrams(text: string): Set<string> {
   const s = text.replace(/\s+/g, "").toLowerCase();

@@ -50,6 +50,7 @@ export type ThreadRow = {
   pinned: number;
   locked: number;
   flair: string | null;
+  origin_thread_id: number | null;
   removed: number;
   created_at: string;
 };
@@ -312,6 +313,11 @@ export function listThreads(opts: { communityId?: number; authorId?: number; fla
   );
 }
 
+/** このスレッドから派生したスレッド（新しい順） */
+export function derivedThreads(threadId: number, limit = 10) {
+  return all<ThreadRow>(`${THREAD_SELECT} WHERE t.origin_thread_id = ? AND t.removed = 0 ORDER BY t.created_at DESC LIMIT ?`, threadId, limit);
+}
+
 /** コミュニティで使われているフレアと件数（多い順） */
 export function communityFlairs(communityId: number, limit = 12) {
   return all<{ flair: string; n: number }>(
@@ -413,15 +419,22 @@ export function normalizeFlair(flair: string | null | undefined) {
   return f || null;
 }
 
-export async function createThread(by: Persona, communityId: number, title: string, body: string, flair?: string | null) {
+export async function createThread(by: Persona, communityId: number, title: string, body: string, flair?: string | null, originThreadId?: number | null) {
   if (!title.trim()) throw new Error("タイトルが空です");
+  let origin: number | null = null;
+  if (originThreadId != null) {
+    const o = await getThread(originThreadId);
+    if (!o || o.removed) throw new Error("派生元のスレッドが見つかりません");
+    origin = o.id;
+  }
   const info = await run(
-    `INSERT INTO threads (community_id, author_id, title, body, flair) VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO threads (community_id, author_id, title, body, flair, origin_thread_id) VALUES (?, ?, ?, ?, ?, ?)`,
     communityId,
     by.id,
     title.trim().slice(0, 300),
     body.slice(0, 10000),
     normalizeFlair(flair),
+    origin,
   );
   return info.meta.last_row_id;
 }

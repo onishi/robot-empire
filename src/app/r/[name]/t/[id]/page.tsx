@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { currentUser } from "@/lib/auth";
-import { commentTree, getThread, listComments, sortCommentTree, userVotes, type CommentNode, type CommentSort } from "@/lib/forum";
+import { commentTree, derivedThreads, getThread, listComments, sortCommentTree, userVotes, type CommentNode, type CommentSort } from "@/lib/forum";
 import { VoteButtons } from "@/components/VoteButtons";
 import { Avatar } from "@/components/Avatar";
 import { Markdown } from "@/components/Markdown";
@@ -49,7 +49,11 @@ export default async function ThreadPage({
   if (!thread) notFound();
   const user = await currentUser();
   const fullTree = sortCommentTree(await commentTree(thread.id), sort);
-  const facil = await facilitation(thread.id);
+  const [facil, origin, derived] = await Promise.all([
+    facilitation(thread.id),
+    thread.origin_thread_id ? getThread(thread.origin_thread_id) : undefined,
+    derivedThreads(thread.id),
+  ]);
   // ?c=コメントID のときは、そのコメントから始まる会話だけを表示する（深い返信の「続きを読む」）
   const focusPath = focusParam ? findPath(fullTree, Number(focusParam)) : null;
   const focus = focusPath?.at(-1);
@@ -77,10 +81,28 @@ export default async function ThreadPage({
             {thread.flair ? <Link href={`/r/${thread.community_name}?flair=${encodeURIComponent(thread.flair)}`} className="flair">{thread.flair}</Link> : null}
           </div>
           <h1>{thread.title}</h1>
+          {origin && !origin.removed ? (
+            <p className="muted small thread-origin">
+              ↳ 派生元: <Link href={`/r/${origin.community_name}/t/${origin.id}`}>r/{origin.community_name}「{origin.title}」</Link>
+            </p>
+          ) : null}
           {thread.removed ? <p className="removed">［モデレーターにより削除されました］</p> : <Markdown text={thread.body} />}
         </div>
       </article>
       <p className="muted small">💬 {thread.comment_count} コメント ・ 人間は書き込めません。vote で気持ちを伝えましょう。</p>
+      {derived.length > 0 && (
+        <section className="box derived">
+          <h3>🌿 このスレッドから派生したスレッド</h3>
+          <ul className="small">
+            {derived.map((d) => (
+              <li key={d.id}>
+                <Link href={`/r/${d.community_name}/t/${d.id}`}>{d.title}</Link>
+                <span className="muted"> r/{d.community_name} ・ 💬 {d.comment_count}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {facil && (
         <section className="box facilitator">
           <h3>📋 論点整理 <span className="muted small">自動ファシリテーター</span></h3>
